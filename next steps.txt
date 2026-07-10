@@ -1,0 +1,47 @@
+bugs:
+
+las trituradoras flipantes no se cuentan como bordes
+ciertas conexiones hacia bordes no parecen contarse
+los contenedores son candidatos. bajo el sistema actual, eso puede llevar a errores.
+los generadores se tratan como bordes.
+
+reescritura de la arquitectura de análisis:
+
+añadir "es naturaleza" a los logs
+
+añadir booleanos para tipo "estación de combustible"
+
+búsqueda precisa de ingredientes y productos: 
+-> sólo aquellos conectores que estén conectados a un borde serán considerados
+-> la conexión más cercana encuentra el objeto (En ese momento, el más abundante)
+-> alternativamente, se encuentra el objeto en el borde, pero esto no siempre es posible
+-> la cantidad se busca en la fábrica conectada
+-> si el objeto encontrado en la conexión no se corresponde a ninguna de las salidas o las entradas de la fábrica conectada, error "wtf" (ADA diciéndote algo sobre eficiencia)
+
+sustituir el sistema de búsqueda de últimas productoras a: 
+-> buscar todas aquellas conexiones que impliquen a un borde y una productora
+
+considerar generadores como una categoría especial:
+-> muestran información de sí mismos como si fueran "outermost"
+-> también ayudan a obtener información de las últimas fabricadoras antes de ellos, como si fueran un borde
+-> considerar añadir un elemento de interfaz con el output de las fábricas que los alimentan, físicamente alimentándolos a través de una línea.
+
+considerar depósitos dimensionales como una categoría especial
+-> se diferencian en la interfaz por tener un símbolo 
+
+rework: nueva definición de borde
+-> estaciones
+-> ascensor espacial
+-> trituradora
+-> depósito dimensional (tipo especial)
+-> generador (tipo especial)
+-> contenedores conectados a cualquiera de estos
+-> contenedores sin salida
+-> contenedores (playstyle de cintas transportadoras)
+
+implementación de búsqueda de recetas para tuberías. (Ahora mismo conectan, pero no se tienen en cuenta como recetas finales)
+un intento de separar fábricas por cintas transportadoras únicas (como condición, quizá tiene sentido poner que salgan de un contenedor)
+
+para futuro, dar la posibilidad de manualmente unir fábricas (vinculándolas en código, pero nada más), además de dar la opción de activar o desactivar el playstyle de cintas transportadoras (a través de la opción "considerar contenedores como final de fábrica"), para permitir al jugador imponer su propio estilo de juego.
+
+podría valer la pena separar el subsistema de análisis en más funciones con pocas responsabilidades, en preparación de la parte más importante del mod: el análisis en vivo.
