@@ -20,6 +20,16 @@
 // Spelevator
 #include "Buildables/FGBuildableSpaceElevator.h"		// Isn't it technically a station for space?
 
+// Sink
+#include "Buildables/FGBuildableResourceSink.h"
+
+// Containers
+#include "Buildables/FGBuildableStorage.h"				// Solid
+#include "Buildables/FGBuildablePipeReservoir.h"		// Fluid
+
+// Dimensional Depot
+#include "Buildables/FGCentralStorageContainer.h"
+
 TArray<AFGBuildableFactory*> UFactoryCluster::GetValidMembers() const
 {
 	// Stored here are weak references to the buildables. We're returning the buildables themselves.
@@ -35,26 +45,45 @@ TArray<AFGBuildableFactory*> UFactoryCluster::GetValidMembers() const
 	return Result;
 }
 
+EFactoryBoundaryType UFactoryCluster::ClassifyTerminal(AFGBuildable* Buildable)
+{
+	if (!Buildable) return EFactoryBoundaryType::None;
+
+	// Plain Boundary: vehicle stations, AWESOME Sink, Space Elevator.
+	if (Cast<AFGBuildableDockingStation>(Buildable)
+		|| Cast<AFGBuildableDroneStation>(Buildable)
+		|| Cast<AFGBuildableTrainPlatformCargo>(Buildable)
+		|| Cast<AFGBuildableSpaceElevator>(Buildable)
+		|| Cast<AFGBuildableResourceSink>(Buildable))
+	{
+		return EFactoryBoundaryType::Boundary;
+	}
+
+	// Generators: power generators, biofuel generators, etc.
+	if (Cast<AFGBuildableGenerator>(Buildable))
+	{
+		return EFactoryBoundaryType::Generator;
+	}
+
+	// Extractors: resource extractors, water extractors, etc.
+	if (Cast<AFGBuildableResourceExtractor>(Buildable))
+	{
+		return EFactoryBoundaryType::Extractor;
+	}
+
+	// Dimensional Depot
+	if (Cast<AFGCentralStorageContainer>(Buildable))
+	{
+		return EFactoryBoundaryType::DimensionalDepot;
+	}
+
+	return EFactoryBoundaryType::None;
+}
+
 bool UFactoryCluster::IsBoundaryBuildable(AFGBuildable* Buildable)
 {
-	// Boundaries are stations or space elevators. generators will be considered outermost buildings producing energy.
 
-	if (!Buildable) return false;
-
-	// Attempt to cast to station type
-	if (Cast<AFGBuildableDockingStation>(Buildable) ||  Cast<AFGBuildableDroneStation>(Buildable) || Cast<AFGBuildableTrainPlatformCargo>(Buildable))
-	{
-		return true;
-	}
-	// Attempt to cast to space elevator
-	else if (Cast<AFGBuildableSpaceElevator>(Buildable))
-	{
-		return true;
-	}
-	// Nope, it ain't anything
-	else {
-		return false;
-	}
+	return ClassifyTerminal(Buildable) != EFactoryBoundaryType::None;
 }
 
 bool UFactoryCluster::IsNature() const
@@ -70,8 +99,9 @@ bool UFactoryCluster::IsNature() const
 		AFGBuildableFactory* M = Weak.Get();
 		if (!M) continue;
 
-		if (Cast<AFGBuildableResourceExtractor>(M)) bHasExtractor = true;
-		if (IsBoundaryBuildable(M)) bHasBoundary = true;
+		const EFactoryBoundaryType Kind = ClassifyTerminal(M);
+		if (Kind == EFactoryBoundaryType::Extractor) bHasExtractor = true;
+		if (Kind == EFactoryBoundaryType::Boundary) bHasBoundary = true;
 		if (Cast<AFGBuildableManufacturer>(M)) bHasManufacturer = true;
 	}
 

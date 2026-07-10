@@ -21,6 +21,10 @@ public:
 	UPROPERTY()
 	TArray<TWeakObjectPtr<AFGBuildableFactory>> Members;
 
+	/** Boundaries for this factory */
+	UPROPERTY()
+	TArray<FResolvedEndpoint> BoundaryRefs;
+
 	/** Precomputed by BuildConnectorGraph. */
 	UPROPERTY()
 	TArray<FConnectorResolution> ConnectorGraph;
@@ -51,7 +55,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
 	TArray<TSubclassOf<UFGRecipe>> GetConsumedRecipes(TArray<FString>& out_InputErrors) const;
 
-	/** True if Buildable is a vehicle station/space elevator. */
+
+	static EFactoryBoundaryType ClassifyTerminal(AFGBuildable* Buildable);
+
+	/** True if Buildable is a boundary, defined at EFactoryTerminalKind. */
 	static bool IsBoundaryBuildable(AFGBuildable* Buildable);
 
 };

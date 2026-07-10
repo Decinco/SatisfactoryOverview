@@ -7,6 +7,8 @@
 #include "Buildables/FGBuildableFactory.h"
 #include "FactoryTypes.h"
 #include "FactoryCluster.h"
+#include "Buildables/FGBuildableStorage.h"
+
 #include "FactoryAnalysisSubsystem.generated.h"
 
 class AFGBuildable;
@@ -53,12 +55,24 @@ private:
 	/** Follows a connector to the other buildable it connects to, if any, returning nullptr if none. */
 	TArray<FResolvedEndpoint> ResolveConnections(UFGFactoryConnectionComponent* StartConnector, TSet<AFGBuildable*>& Visited);
 
+	/** Finds out if a given storage is a boundary */
+	TArray<FResolvedEndpoint> ResolveContainer(AFGBuildableStorage* Container, UFGFactoryConnectionComponent* EntryConnector, TSet<AFGBuildable*>& Visited);
+
+	/** Marks a given storage to be a boundary */
+	static FResolvedEndpoint MakeContainerTerminalEndpoint(AFGBuildableStorage* Container, UFGFactoryConnectionComponent* EntryConnector);
+
 	/** Builds the ConnectorGraph for a cluster, using the union-find data structure to find connected components. */
 	void BuildConnectorGraph(UFactoryCluster* Cluster);
 
 	TBudgetedWorkQueue<AFGBuildableFactory*> WorkQueue;
 	FBuildableUnionFind UnionFind;
 
-	// Populated during ProcessBuildable, consumed in OnScanComplete's pipe-merge pass (design doc §4 step 5).
+	// Boundary connections to be added to the cluster after the scan completes.
+	TMap<TWeakObjectPtr<AFGBuildableFactory>, TArray<FResolvedEndpoint>> PendingBoundaryEndpoints;
+
+	// Populated during ProcessBuildable, consumed in OnScanComplete's pipe-merge pass.
 	TMap<int32, TArray<AFGBuildableFactory*>> PipeNetworkGroups; // ADJUST: confirm real pipe network ID type (assumed int32 here)
+
+	// Mod config
+	bool bTreatContainersAsFactoryEnd = false;
 };
