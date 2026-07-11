@@ -1,4 +1,5 @@
 #include "FactoryCluster.h"
+#include "ItemAmount.h"
 
 // Generic energy-accepting buildable
 #include "Buildables/FGBuildableFactory.h"
@@ -9,7 +10,7 @@
 // Generic resource extractor
 #include "Buildables/FGBuildableResourceExtractor.h"
 
-// Generic energy producer (aka generators) may be used later lol
+// Generic energy producer (aka generators) 
 #include "Buildables/FGBuildableGenerator.h"
 
 // Station classes
@@ -108,44 +109,136 @@ bool UFactoryCluster::IsNature() const
 	return bHasExtractor && bHasBoundary && !bHasManufacturer;
 }
 
-
-TArray<TSubclassOf<UFGRecipe>> UFactoryCluster::GetProducedRecipes() const
+TMap<TSubclassOf< class UFGItemDescriptor >, float> UFactoryCluster::GetProducedItems() const
 {
-	TArray<TSubclassOf<UFGRecipe>> Result;
+	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] GetProducedItems - %d BoundaryRefs"), BoundaryRefs.Num());
 
-	for (const FConnectorResolution& Res : ConnectorGraph)
-	{
-		if (Res.SourceDirection != EFactoryConnectionDirection::FCD_OUTPUT)
-		{
-			continue;
-		}
-		// By default, connecting to nothing is also considered "outermost", since it's the end of the production chain. TODO: add analysis to see what exactly is being output to other manufacturers, and what is being output to extractors or export boundaries, based on connector contents.
-		bool bIsOutermost = Res.Endpoints.Num() == 0;
+	TMap<TSubclassOf< class UFGItemDescriptor >, float> ItemSet;
 
-		// Check if it's the outermost output of a production chain regardless, based on its connection to a output boundary (station or space elevator).
-		for (const FResolvedEndpoint& Endpoint : Res.Endpoints)
-		{
-			AFGBuildableFactory* EndpointBuildable = Endpoint.Buildable.Get();
-			if (EndpointBuildable
-				&& IsBoundaryBuildable(EndpointBuildable)
-				&& Endpoint.EndpointDirection == EFactoryConnectionDirection::FCD_OUTPUT)
-			{
-				bIsOutermost = true; // one positive is enough, even with splits
-				break;
+	// Build ItemSet
+	for (FResolvedEndpoint Endpoint : BoundaryRefs) {
+
+		// Only if input
+		if (Endpoint.EndpointDirection == EConnectionDirection::Input) {
+
+			AFGBuildableFactory* EndpointFactory = Endpoint.Buildable.Get();
+			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]   Endpoint: %s (Input)"), EndpointFactory ? *EndpointFactory->GetName() : TEXT("null"));
+
+			// An output boundary's input connects to the previous buildings' output.
+			TArray<FConnectorResolution> Connections = GetConnectorsTo(EndpointFactory, EConnectionDirection::Output);
+			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     %d connections from Output side"), Connections.Num());
+
+			// Takes item of type
+			for (FConnectorResolution Connection : Connections) {
+
+				if (AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Connection.SourceOwner)) {
+
+					// Machine data
+					float productionAmplifier = Manufacturer->GetCurrentProductionBoost();
+					float cycleTime = Manufacturer->GetProductionCycleTime();
+
+					UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]         Manufacturer: %s, cycleTime: %.2f, productionAmplifier: %.2f"),
+						*Manufacturer->GetName(), cycleTime, productionAmplifier);
+
+					// Get products
+					TSubclassOf<class UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
+					TArray<FItemAmount> Products = UFGRecipe::GetProducts(Recipe);
+
+					UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]         Recipe: %s, %d products"),
+						Recipe ? *Recipe->GetName() : TEXT("null"), Products.Num());
+
+					// Only products that match the connector type we're looking through
+					for (FItemAmount Product : Products) {
+						TSubclassOf< class UFGItemDescriptor > item = Product.ItemClass;
+						int amount = Product.Amount;
+
+						if (MapItemType(UFGItemDescriptor::GetForm(item)) == Connection.Kind) {
+							// mafs
+							float producedAmount = 60 / cycleTime * amount * productionAmplifier;
+
+							UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]           + %s: raw %d * 60/%.2f * %.2f = %.2f/min"),
+								*item->GetName(), amount, cycleTime, productionAmplifier, producedAmount);
+
+							if (ItemSet.Contains(item)) {
+								ItemSet[item] += producedAmount;
+								UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]             accumulated: %.2f/min"), ItemSet[item]);
+							}
+							else {
+								ItemSet.Add(item, producedAmount);
+							}
+
+						}
+						else {
+							UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]           - %s skipped (form mismatch)"), *item->GetName());
+						}
+					}
+				}
+				else {
+					UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       Not a manufacturer, skipping"));
+				}
 			}
 		}
+	}
 
-		if (!bIsOutermost || !Res.SourceConnector)
-		{
-			continue;
+	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] GetProducedItems final: %d items"), ItemSet.Num());
+
+	return ItemSet;
+}
+
+TMap<TSubclassOf< class UFGItemDescriptor >, float> UFactoryCluster::GetConsumedItems(TArray<FString>& out_InputErrors) const
+{
+	TMap<TSubclassOf< class UFGItemDescriptor >, float> ItemSet;
+
+	for (FResolvedEndpoint Endpoint : BoundaryRefs) {
+
+		// Only if output
+		if (Endpoint.EndpointDirection == EConnectionDirection::Output) {
+
+			// An input boundary's output connects to the next buildings' input.
+			TArray<FConnectorResolution> Connections = GetConnectorsTo(Endpoint.Buildable.Get(), EConnectionDirection::Input);
+
+			// Currently takes all items of type
+			for (FConnectorResolution Connection : Connections) {
+				continue; // TODO
+			}
+
 		}
+	}
 
-		// Get this connector's owner, and if it's a manufacturer with a valid recipe, add it to the result.
-		if (AFGBuildableManufacturer* Owner = Cast<AFGBuildableManufacturer>(Res.SourceConnector->GetOuterBuildable()))
+	return ItemSet;
+}
+
+void UFactoryCluster::RebuildEndpointIndex()
+{
+	EndpointIndex.Empty();
+	for (int32 i = 0; i < ConnectorGraph.Num(); ++i)
+	{
+		for (const FResolvedEndpoint& Endpoint : ConnectorGraph[i].Endpoints)
 		{
-			if (Owner->GetCurrentRecipe())
+			if (AFGBuildableFactory* Buildable = Endpoint.Buildable.Get())
 			{
-				Result.AddUnique(Owner->GetCurrentRecipe());
+				EndpointIndex.FindOrAdd(Buildable).Add(i);
+			}
+		}
+	}
+}
+
+TArray<FConnectorResolution> UFactoryCluster::GetConnectorsTo(AFGBuildableFactory* Target, EConnectionDirection Direction) const
+{
+	TArray<FConnectorResolution> Result;
+	if (!Target)
+	{
+		return Result;
+	}
+
+	if (const TArray<int32>* Indices = EndpointIndex.Find(Target))
+	{
+		Result.Reserve(Indices->Num());
+		for (int32 Index : *Indices)
+		{
+			if (ConnectorGraph.IsValidIndex(Index) && ConnectorGraph[Index].SourceDirection == Direction)
+			{
+				Result.Add(ConnectorGraph[Index]);
 			}
 		}
 	}
@@ -153,70 +246,14 @@ TArray<TSubclassOf<UFGRecipe>> UFactoryCluster::GetProducedRecipes() const
 	return Result;
 }
 
-TArray<TSubclassOf<UFGRecipe>> UFactoryCluster::GetConsumedRecipes(TArray<FString>& out_InputErrors) const
-{
-	TArray<TSubclassOf<UFGRecipe>> Result;
-	out_InputErrors.Empty();
-
-	// While a manufacturer can be considered innermost, some of its inputs may still be connected to something. TODO: add analysis to see what exactly is being input from other manufacturers, and what is being input from extractors or import boundaries, based on connector contents.
-	TMap<AFGBuildableManufacturer*, bool> ManufacturerHasPositiveInput;
-	TSet<AFGBuildableManufacturer*> ManufacturersWithErrors;
-
-	for (const FConnectorResolution& Res : ConnectorGraph)
+EFactoryConnectionKind UFactoryCluster::MapItemType(EResourceForm ResourceForm) const {
+	switch (ResourceForm)
 	{
-		if (Res.SourceDirection != EFactoryConnectionDirection::FCD_INPUT || !Res.SourceConnector)
-		{
-			continue;
-		}
-
-		AFGBuildableManufacturer* Owner = Cast<AFGBuildableManufacturer>(Res.SourceConnector->GetOuterBuildable());
-		if (!Owner)
-		{
-			continue;
-		}
-
-		if (Res.Endpoints.Num() == 0)
-		{
-			ManufacturersWithErrors.Add(Owner);
-			continue;
-		}
-
-		// Check if it's the innermost input of a production chain, based on its connection to an extractor or import station.
-		for (const FResolvedEndpoint& Endpoint : Res.Endpoints)
-		{
-			AFGBuildableFactory* EndpointBuildable = Endpoint.Buildable.Get();
-			if (!EndpointBuildable)
-			{
-				continue;
-			}
-
-			const bool bIsExtractor = Cast<AFGBuildableResourceExtractor>(EndpointBuildable) != nullptr;
-			const bool bIsImportBoundary = IsBoundaryBuildable(EndpointBuildable)
-				&& Endpoint.EndpointDirection == EFactoryConnectionDirection::FCD_OUTPUT;
-
-			if (bIsExtractor || bIsImportBoundary)
-			{
-				ManufacturerHasPositiveInput.Add(Owner, true); // one positive is enough, even with splits
-				break;
-			}
-		}
+	case EResourceForm::RF_LIQUID:
+		return EFactoryConnectionKind::Fluid;
+	case EResourceForm::RF_GAS:
+		return EFactoryConnectionKind::Fluid;
+	default:
+		return EFactoryConnectionKind::Item;
 	}
-
-	for (const auto& Pair : ManufacturerHasPositiveInput)
-	{
-		if (Pair.Value && Pair.Key && Pair.Key->GetCurrentRecipe())
-		{
-			Result.AddUnique(Pair.Key->GetCurrentRecipe());
-		}
-	}
-
-	for (AFGBuildableManufacturer* Manufacturer : ManufacturersWithErrors)
-	{
-		if (Manufacturer)
-		{
-			out_InputErrors.Add(Manufacturer->GetName());
-		}
-	}
-
-	return Result;
 }

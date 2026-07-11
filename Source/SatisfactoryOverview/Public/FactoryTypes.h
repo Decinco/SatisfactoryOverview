@@ -1,11 +1,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "FGFactoryConnectionComponent.h" // for EFactoryConnectionDirection
+#include "FGFactoryConnectionComponent.h"
+#include "FGPipeConnectionComponent.h"
 #include "FactoryTypes.generated.h"
 
 class AFGBuildableFactory;
 class UFGFactoryConnectionComponent;
+
+UENUM()
+enum class EFactoryConnectionKind : uint8
+{
+	Item,
+	Fluid
+};
 
 /**
  * Represents the kind of boundary a factory is.
@@ -20,6 +28,24 @@ enum class EFactoryBoundaryType : uint8
 	Extractor,          // extractor
 	ContainerBoundary   // some containers, excluded from the factory graph
 };
+
+/** 
+ * Represents directionality for a connector, kind agnostic.
+ */
+UENUM()
+enum class EConnectionDirection : uint8 
+{
+	Input,
+	Output,
+	Any
+};
+
+/** Maps kind-specific connection direction/role enums onto the kind-agnostic EConnectionDirection. */
+struct FConnectionDirectionMapper
+{
+	static EConnectionDirection Map(EFactoryConnectionDirection Direction);
+	static EConnectionDirection Map(EPipeConnectionType Type);
+};
  
 /**
  * Represents an endpoint for a belt/pipe.
@@ -33,7 +59,7 @@ struct FResolvedEndpoint
 	TWeakObjectPtr<AFGBuildableFactory> Buildable;
 
 	UPROPERTY()
-	EFactoryConnectionDirection EndpointDirection = EFactoryConnectionDirection::FCD_ANY;
+	EConnectionDirection EndpointDirection = EConnectionDirection::Any;
 
 	/** None for a normal machine endpoint; otherwise the kind of terminal this endpoint stopped at (§2). */
 	UPROPERTY()
@@ -59,10 +85,20 @@ struct FConnectorResolution
 	UPROPERTY()
 	TObjectPtr<UFGFactoryConnectionComponent> SourceConnector;
 
+	/** One of a manufacturer's own pipe connectors (input or output). */
 	UPROPERTY()
-	EFactoryConnectionDirection SourceDirection = EFactoryConnectionDirection::FCD_ANY;
+	TObjectPtr<UFGPipeConnectionComponent> SourcePipeConnector;
+
+	UPROPERTY()
+	EConnectionDirection SourceDirection = EConnectionDirection::Any;
 
 	/** What SourceConnector resolves to. Empty means dead-ended or unconnected. */
 	UPROPERTY()
 	TArray<FResolvedEndpoint> Endpoints;
+
+	UPROPERTY()
+	EFactoryConnectionKind Kind = EFactoryConnectionKind::Item;
+
+	UPROPERTY()
+	TWeakObjectPtr<AFGBuildableFactory> SourceOwner;
 };

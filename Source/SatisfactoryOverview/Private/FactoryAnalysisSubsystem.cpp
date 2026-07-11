@@ -19,6 +19,9 @@
 #include "Buildables/FGCentralStorageContainer.h"
 #include "FactoryCluster.h"
 
+// Connection resolver
+#include "FactoryConnectionResolver.h"
+
 UFactoryAnalysisSubsystem* UFactoryAnalysisSubsystem::GetFactoryAnalysisSubsystem(const UObject* WorldContextObject)
 {
 	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
@@ -86,7 +89,7 @@ void UFactoryAnalysisSubsystem::ProcessBuildable(AFGBuildableFactory* const& Bui
 		if (Connector->IsConnected())
 		{
 			TSet<AFGBuildable*> VisitedConveyors;
-			TArray<FResolvedEndpoint> Connections = ResolveConnections(Connector->GetConnection(), VisitedConveyors);
+			TArray<FResolvedEndpoint> Connections = FactoryConnectionResolver::ResolveBeltConnections(Connector->GetConnection(), VisitedConveyors);
 
 			for (const FResolvedEndpoint& Connection : Connections)
 			{
@@ -110,6 +113,12 @@ void UFactoryAnalysisSubsystem::ProcessBuildable(AFGBuildableFactory* const& Bui
 						*Buildable->GetName(), *ConnectedBuildable->GetName(), *ConnectedBuildable->GetName(), static_cast<int32>(Connection.BoundType));
 					UnionFind.MakeSet(ConnectedBuildable);
 					UnionFind.Union(Buildable, ConnectedBuildable);
+
+					// Also record physical terminals as boundary refs
+					if (Connection.BoundType != EFactoryBoundaryType::None)
+					{
+						PendingBoundaryEndpoints.FindOrAdd(Buildable).AddUnique(Connection);
+					}
 				}
 			}
 		}
@@ -125,139 +134,6 @@ void UFactoryAnalysisSubsystem::ProcessBuildable(AFGBuildableFactory* const& Bui
 			PipeNetworkGroups.FindOrAdd(NetworkId).Add(Buildable);
 		}
 	}
-}
-
-TArray <FResolvedEndpoint> UFactoryAnalysisSubsystem::ResolveConnections(UFGFactoryConnectionComponent* StartConnector, TSet<AFGBuildable*>& Visited)
-{
-	TArray<FResolvedEndpoint> Result;
-	UFGFactoryConnectionComponent* Current = StartConnector;
-	while (Current)
-	{
-		AFGBuildable* Outer = Current->GetOuterBuildable();
-		if (!Outer) break;
-		if (Visited.Contains(Outer)) break;
-		Visited.Add(Outer);
-
-		// Terminal Check
-		const EFactoryBoundaryType Terminal = UFactoryCluster::ClassifyTerminal(Outer);
-		if (Terminal != EFactoryBoundaryType::None)
-		{
-			FResolvedEndpoint Endpoint;
-			Endpoint.Buildable = Cast<AFGBuildableFactory>(Outer);
-			Endpoint.EndpointDirection = Current->GetDirection(); // Current IS the terminal's own connector here
-			Endpoint.BoundType = Terminal;
-			Result.Add(Endpoint);
-			return Result;
-		}
-
-		if (AFGBuildableFactory* Factory = Cast<AFGBuildableFactory>(Outer))
-		{
-			// Manufacturer check
-			if (Cast<AFGBuildableManufacturer>(Factory))
-			{
-				FResolvedEndpoint Endpoint;
-				Endpoint.Buildable = Factory;
-				Endpoint.EndpointDirection = Current->GetDirection();
-				Endpoint.BoundType = EFactoryBoundaryType::None;
-				Result.Add(Endpoint);
-				return Result;
-			}
-
-			// Container check
-			if (AFGBuildableStorage* Container = Cast<AFGBuildableStorage>(Factory))
-			{
-				// Will check if the container is a boundary and add it to a special variable in the cluster if so.
-				Result.Append(ResolveContainer(Container, Current, Visited));
-				return Result;
-			}
-
-			// Anything else factory-like (unclassified attachments etc.) -- pass through, ignored as terminals.
-			for (UFGFactoryConnectionComponent* Conn : Factory->GetConnectionComponents())
-			{
-				if (Conn != Current && Conn->IsConnected())
-					Result.Append(ResolveConnections(Conn->GetConnection(), Visited));
-			}
-			return Result;
-		}
-
-		// Conveyor check (If connected to a belt, follow it)
-		if (AFGBuildableConveyorBase* Conveyor = Cast<AFGBuildableConveyorBase>(Outer))
-		{
-			UFGFactoryConnectionComponent* OtherSide = (Current == Conveyor->GetConnection0()) ? Conveyor->GetConnection1() : Conveyor->GetConnection0();
-			if (OtherSide && OtherSide->IsConnected()) { Current = OtherSide->GetConnection(); continue; }
-			break;
-		}
-
-		// Splitter/merger check (If connected to a splitter/merger, follow all other connections)
-		if (AFGBuildableConveyorAttachment* Attachment = Cast<AFGBuildableConveyorAttachment>(Outer))
-		{
-			TArray<UFGFactoryConnectionComponent*> AllConnections;
-			Attachment->GetComponents<UFGFactoryConnectionComponent>(AllConnections);
-			for (auto* Connection : AllConnections)
-				if (Connection != Current && Connection->IsConnected())
-					Result.Append(ResolveConnections(Connection->GetConnection(), Visited));
-			return Result;
-		}
-		break;
-	}
-	return Result;
-}
-
-TArray<FResolvedEndpoint> UFactoryAnalysisSubsystem::ResolveContainer(AFGBuildableStorage* Container, UFGFactoryConnectionComponent* EntryConnector, TSet<AFGBuildable*>& Visited)
-{
-	// Condition 1: Playstyle toggle makes every container an unconditional terminal.
-	if (bTreatContainersAsFactoryEnd)
-	{
-		return { MakeContainerTerminalEndpoint(Container, EntryConnector) };
-	}
-
-	TArray<UFGFactoryConnectionComponent*> AllConnectors;
-	Container->GetComponents<UFGFactoryConnectionComponent>(AllConnectors);
-
-	// Condition 2: no other connected connector.
-	bool bHasOtherConnectedConnector = false;
-	for (UFGFactoryConnectionComponent* Conn : AllConnectors)
-	{
-		if (Conn != EntryConnector && Conn->IsConnected())
-		{
-			bHasOtherConnectedConnector = true;
-			break;
-		}
-	}
-	if (!bHasOtherConnectedConnector)
-	{
-		return { MakeContainerTerminalEndpoint(Container, EntryConnector) };
-	}
-
-	// Otherwise, resolve through as a transparent pass-through, same as any other attachment.
-	TArray<FResolvedEndpoint> PassThroughResult;
-	for (UFGFactoryConnectionComponent* Conn : AllConnectors)
-	{
-		if (Conn != EntryConnector && Conn->IsConnected())
-			PassThroughResult.Append(ResolveConnections(Conn->GetConnection(), Visited));
-	}
-
-	// Condition 1: if the next found machine is also a boundary.
-	const bool bDownstreamIsTerminal = PassThroughResult.ContainsByPredicate([](const FResolvedEndpoint& Endpoint)
-		{
-			return Endpoint.BoundType != EFactoryBoundaryType::None;
-		});
-
-	if (bDownstreamIsTerminal)
-	{
-		return { MakeContainerTerminalEndpoint(Container, EntryConnector) };
-	}
-
-	return PassThroughResult;
-}
-
-FResolvedEndpoint UFactoryAnalysisSubsystem::MakeContainerTerminalEndpoint(AFGBuildableStorage* Container, UFGFactoryConnectionComponent* EntryConnector)
-{
-	FResolvedEndpoint Endpoint;
-	Endpoint.Buildable = Cast<AFGBuildableFactory>(Container);
-	Endpoint.EndpointDirection = EntryConnector ? EntryConnector->GetDirection() : EFactoryConnectionDirection::FCD_ANY;
-	Endpoint.BoundType = EFactoryBoundaryType::ContainerBoundary;
-	return Endpoint;
 }
 
 void UFactoryAnalysisSubsystem::OnScanComplete()
@@ -289,6 +165,7 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 			}
 		}
 		BuildConnectorGraph(Cluster);
+		Cluster->RebuildEndpointIndex();
 		Clusters.Add(Cluster);
 	}
 
@@ -301,48 +178,10 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 
 		// Print recipes produced at the endpoints.
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Recipes produced at endpoints:"));
-		TArray<TSubclassOf<UFGRecipe>> ProducedRecipes = Cluster->GetProducedRecipes();
-		for (TSubclassOf<UFGRecipe> Recipe : ProducedRecipes)
+		TMap<TSubclassOf< class UFGItemDescriptor >, float> ProducedItems = Cluster->GetProducedItems();
+		for (TPair<TSubclassOf< class UFGItemDescriptor >, float> Item : ProducedItems)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s"), *Recipe->GetName());
-		}
-
-		if (Cluster->Members.Num() <= 5)
-		{
-			TArray<TWeakObjectPtr<AFGBuildableFactory>> Members = Cluster->Members;
-
-			// Print stats about each member of the cluster
-			for (TWeakObjectPtr<AFGBuildableFactory> MemberPtr : Members)
-			{
-				auto Member = MemberPtr.Get();
-
-				FVector Location = Member->GetActorLocation();
-
-				TArray<UFGFactoryConnectionComponent*> Connectors;
-				Member->GetComponents<UFGFactoryConnectionComponent>(Connectors);
-				int32 ConnectedCount = 0;
-				for (auto* Conn : Connectors)
-				{
-					if (Conn->IsConnected()) ConnectedCount++;
-				}
-
-				UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     -> %s at (%.0f, %.0f, %.0f) | Configured=%d Producing=%d HasPower=%d | Connectors: %d/%d connected"),
-					*Member->GetName(), Location.X, Location.Y, Location.Z,
-					Member->IsConfigured(), Member->IsProducing(), Member->HasPower(),
-					ConnectedCount, Connectors.Num());
-
-				// Also log class name and inherited classes name
-				UClass* Class = Member->GetClass();
-				FString ClassName = Class->GetName();
-				FString InheritedClasses;
-				while (Class->GetSuperClass())
-				{
-					Class = Class->GetSuperClass();
-					InheritedClasses += Class->GetName() + TEXT(" -> ");
-				}
-				UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]         Class: %s | Inherited: %s"), *ClassName, *InheritedClasses);
-
-			}
+			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s - %.2f/min"), *Item.Key->GetName(), Item.Value);
 		}
 	}
 
@@ -360,14 +199,22 @@ void UFactoryAnalysisSubsystem::BuildConnectorGraph(UFactoryCluster* Cluster)
 		{
 			FConnectorResolution Resolution;
 			Resolution.SourceConnector = Conn;
-			Resolution.SourceDirection = Conn->GetDirection();
+			Resolution.SourceDirection = FConnectionDirectionMapper::Map(Conn->GetDirection());
 
 			if (Conn->IsConnected())
 			{
 				TSet<AFGBuildable*> Visited;
-				Resolution.Endpoints = ResolveConnections(Conn->GetConnection(), Visited);
+				Resolution.Endpoints = FactoryConnectionResolver::ResolveBeltConnections(Conn->GetConnection(), Visited);
 			}
 			Cluster->ConnectorGraph.Add(Resolution);
+		}
+
+		// Get its pipe connections
+		TArray<UFGPipeConnectionComponent*> PipeConnections;
+		Manufacturer->GetComponents<UFGPipeConnectionComponent>(PipeConnections);
+		for (UFGPipeConnectionComponent* PipeConn : PipeConnections)
+		{
+			Cluster->ConnectorGraph.Add(FactoryConnectionResolver::ResolvePipeConnections(Manufacturer, PipeConn, PipeNetworkGroups));
 		}
 	}
 }

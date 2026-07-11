@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "FactoryTypes.h"
+#include "ItemAmount.h"
+
 #include "FactoryCluster.generated.h"
 
 class AFGBuildableFactory;
@@ -29,6 +31,9 @@ public:
 	UPROPERTY()
 	TArray<FConnectorResolution> ConnectorGraph;
 
+	/** Builds EndpointIndex, to keep track of connections */
+	void RebuildEndpointIndex();
+
 	/** Returns only Members that are still valid (not demolished since the scan). */
 	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
 	TArray<AFGBuildableFactory*> GetValidMembers() const;
@@ -40,25 +45,31 @@ public:
 	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis")
 	bool IsNature() const;
 
-	/**
-	 * Recipes of manufacturers whose OUTPUT is "outermost": connects to
-	 * nothing, or to an export boundary.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
-	TArray<TSubclassOf<UFGRecipe>> GetProducedRecipes() const;
+	TArray<FConnectorResolution> GetConnectorsTo(AFGBuildableFactory* Target, EConnectionDirection Direction) const;
 
 	/**
-	 * Recipes of manufacturers whose INPUT is "innermost": connects to a
-	 * miner or an import boundary. out_InputErrors lists manufacturer names
-	 * whose input connects to nothing at all.
+	 * Exported items of manufacturers whose OUTPUT is "outermost" -> directly connected to a boundary's input.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
-	TArray<TSubclassOf<UFGRecipe>> GetConsumedRecipes(TArray<FString>& out_InputErrors) const;
+	TMap<TSubclassOf< class UFGItemDescriptor >, float> GetProducedItems() const;
+
+	/**
+	 * Imported items of manufacturers whose INPUT is "innermost" -> directly connected to a boundary's output.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
+	TMap<TSubclassOf< class UFGItemDescriptor >, float> GetConsumedItems(TArray<FString>& out_InputErrors) const;
 
 
 	static EFactoryBoundaryType ClassifyTerminal(AFGBuildable* Buildable);
 
 	/** True if Buildable is a boundary, defined at EFactoryTerminalKind. */
 	static bool IsBoundaryBuildable(AFGBuildable* Buildable);
+
+private:
+	/** Stores this factory's connections between machines. Populated by RebuildEndpointIndex(). */
+	TMap<AFGBuildableFactory*, TArray<int32>> EndpointIndex;
+
+	/** Maps item type to connection type. Helper function. */
+	EFactoryConnectionKind MapItemType(EResourceForm ResourceForm) const;
 
 };
