@@ -177,9 +177,16 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 			*Cluster->GetName(), Cluster->Members.Num(), Cluster->BoundaryRefs.Num(), Cluster->IsNature());
 
 		// Print recipes produced at the endpoints.
-		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Recipes produced at endpoints:"));
+		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Items produced:"));
 		TMap<TSubclassOf< class UFGItemDescriptor >, float> ProducedItems = Cluster->GetProducedItems();
 		for (TPair<TSubclassOf< class UFGItemDescriptor >, float> Item : ProducedItems)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s - %.2f/min"), *Item.Key->GetName(), Item.Value);
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Items consumed:"));
+		TMap<TSubclassOf< class UFGItemDescriptor >, float> ConsumedItems = Cluster->GetConsumedItems();
+		for (TPair<TSubclassOf< class UFGItemDescriptor >, float> Item : ConsumedItems)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s - %.2f/min"), *Item.Key->GetName(), Item.Value);
 		}
@@ -199,6 +206,7 @@ void UFactoryAnalysisSubsystem::BuildConnectorGraph(UFactoryCluster* Cluster)
 		{
 			FConnectorResolution Resolution;
 			Resolution.SourceConnector = Conn;
+			Resolution.SourceOwner = Manufacturer;
 			Resolution.SourceDirection = FConnectionDirectionMapper::Map(Conn->GetDirection());
 
 			if (Conn->IsConnected())

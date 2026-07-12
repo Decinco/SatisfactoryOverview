@@ -4,34 +4,26 @@
 
 EConnectionDirection FConnectionDirectionMapper::Map(EFactoryConnectionDirection Direction)
 {
-	EConnectionDirection MappedDirection;
-
 	switch (Direction)
 	{
 		case EFactoryConnectionDirection::FCD_INPUT:
-			MappedDirection = EConnectionDirection::Input;
+			return EConnectionDirection::Input;
 		case EFactoryConnectionDirection::FCD_OUTPUT:
-			MappedDirection = EConnectionDirection::Output;
+			return EConnectionDirection::Output;
 		default:
-			MappedDirection = EConnectionDirection::Any;
+			return EConnectionDirection::Any;
 	}
-
-	return MappedDirection;
 }
 
 EConnectionDirection FConnectionDirectionMapper::Map(EPipeConnectionType Type)
 {
-	EConnectionDirection MappedDirection;
-
 	switch (Type)
 	{
 	case EPipeConnectionType::PCT_CONSUMER:
-		MappedDirection = EConnectionDirection::Input;
+		return EConnectionDirection::Input;
 	case EPipeConnectionType::PCT_PRODUCER:
-		MappedDirection = EConnectionDirection::Output;
+		return EConnectionDirection::Output;
 	default:
-		MappedDirection = EConnectionDirection::Any;
+		return EConnectionDirection::Any;
 	}
-	
-	return MappedDirection;
 }

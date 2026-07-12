@@ -26,6 +26,7 @@ TArray <FResolvedEndpoint> FactoryConnectionResolver::ResolveBeltConnections(UFG
 		{
 			FResolvedEndpoint Endpoint;
 			Endpoint.Buildable = Cast<AFGBuildableFactory>(Outer);
+			Endpoint.Kind = EFactoryConnectionKind::Item;
 			Endpoint.EndpointDirection = FConnectionDirectionMapper::Map(Current->GetDirection());
 			Endpoint.BoundType = Terminal;
 			Result.Add(Endpoint);
@@ -39,6 +40,7 @@ TArray <FResolvedEndpoint> FactoryConnectionResolver::ResolveBeltConnections(UFG
 			{
 				FResolvedEndpoint Endpoint;
 				Endpoint.Buildable = Factory;
+				Endpoint.Kind = EFactoryConnectionKind::Item;
 				Endpoint.EndpointDirection = FConnectionDirectionMapper::Map(Current->GetDirection());
 				Endpoint.BoundType = EFactoryBoundaryType::None;
 				Result.Add(Endpoint);
@@ -173,6 +175,7 @@ FConnectorResolution FactoryConnectionResolver::ResolvePipeConnections(AFGBuilda
 				continue;
 			}
 			Endpoint.Buildable = Peer;
+			Endpoint.Kind = EFactoryConnectionKind::Fluid;
 			Endpoint.EndpointDirection = FConnectionDirectionMapper::Map(PeerConn->GetPipeConnectionType());
 			Endpoint.BoundType = UFactoryCluster::ClassifyTerminal(Peer);
 			Resolution.Endpoints.Add(Endpoint);
@@ -198,6 +201,7 @@ FResolvedEndpoint FactoryConnectionResolver::MakeContainerTerminalEndpoint(AFGBu
 
 	FResolvedEndpoint Endpoint;
 	Endpoint.Buildable = Cast<AFGBuildableFactory>(Container);
+	Endpoint.Kind = EFactoryConnectionKind::Item;
 	Endpoint.EndpointDirection = EntryConnectorDirection;
 	Endpoint.BoundType = EFactoryBoundaryType::ContainerBoundary;
 	return Endpoint;

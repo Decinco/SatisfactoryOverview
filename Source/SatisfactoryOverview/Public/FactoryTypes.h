@@ -65,6 +65,8 @@ struct FResolvedEndpoint
 	UPROPERTY()
 	EFactoryBoundaryType BoundType = EFactoryBoundaryType::None;
 
+	EFactoryConnectionKind Kind = EFactoryConnectionKind::Item;
+
 	bool operator==(const FResolvedEndpoint& Other) const
 	{
 		return Buildable == Other.Buildable

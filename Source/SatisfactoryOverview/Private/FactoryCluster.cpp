@@ -31,6 +31,33 @@
 // Dimensional Depot
 #include "Buildables/FGCentralStorageContainer.h"
 
+namespace
+{
+	/**
+	 * Groups manufacturers whose configuration is identical.
+	 */
+	struct FRecipeGroupKey
+	{
+		TSubclassOf<UFGRecipe> Recipe;
+		float CycleTime = 0.f;
+		float ProductionBoost = 0.f;
+
+		bool operator==(const FRecipeGroupKey& Other) const
+		{
+			return Recipe == Other.Recipe
+				&& FMath::IsNearlyEqual(CycleTime, Other.CycleTime)
+				&& FMath::IsNearlyEqual(ProductionBoost, Other.ProductionBoost);
+		}
+	};
+
+	// Hashing on Recipe alone is fine: CycleTime/ProductionBoost only need to be
+	// correct in operator==, they don't need to be reflected in the bucket hash.
+	uint32 GetTypeHash(const FRecipeGroupKey& Key)
+	{
+		return GetTypeHash(Key.Recipe);
+	}
+}
+
 TArray<AFGBuildableFactory*> UFactoryCluster::GetValidMembers() const
 {
 	// Stored here are weak references to the buildables. We're returning the buildables themselves.
@@ -109,103 +136,118 @@ bool UFactoryCluster::IsNature() const
 	return bHasExtractor && bHasBoundary && !bHasManufacturer;
 }
 
-TMap<TSubclassOf< class UFGItemDescriptor >, float> UFactoryCluster::GetProducedItems() const
+TMap<TSubclassOf<class UFGItemDescriptor>, FItemBalance> UFactoryCluster::ComputeItemBalanceSheet(bool bInFlagOverflowAsInefficient) const
 {
-	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] GetProducedItems - %d BoundaryRefs"), BoundaryRefs.Num());
+	// --- Pass 1: group manufacturers by identical production rate. ---
+	TMap<FRecipeGroupKey, int32> GroupCounts;
 
-	TMap<TSubclassOf< class UFGItemDescriptor >, float> ItemSet;
+	for (const TWeakObjectPtr<AFGBuildableFactory>& Weak : Members)
+	{
+		AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Weak.Get());
+		if (!Manufacturer) continue;
 
-	// Build ItemSet
-	for (FResolvedEndpoint Endpoint : BoundaryRefs) {
+		TSubclassOf<UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
+		if (!Recipe) continue;
 
-		// Only if input
-		if (Endpoint.EndpointDirection == EConnectionDirection::Input) {
+		const FRecipeGroupKey Key{
+			Recipe,
+			Manufacturer->GetProductionCycleTime(),
+			Manufacturer->GetCurrentProductionBoost()
+		};
+		GroupCounts.FindOrAdd(Key)++;
+	}
 
-			AFGBuildableFactory* EndpointFactory = Endpoint.Buildable.Get();
-			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]   Endpoint: %s (Input)"), EndpointFactory ? *EndpointFactory->GetName() : TEXT("null"));
+	// --- Pass 2: turn each group into produced/consumed rate contributions. ---
+	TMap<TSubclassOf<UFGItemDescriptor>, FItemBalance> Sheet;
 
-			// An output boundary's input connects to the previous buildings' output.
-			TArray<FConnectorResolution> Connections = GetConnectorsTo(EndpointFactory, EConnectionDirection::Output);
-			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     %d connections from Output side"), Connections.Num());
+	for (const TPair<FRecipeGroupKey, int32>& GroupPair : GroupCounts)
+	{
+		const FRecipeGroupKey& Key = GroupPair.Key;
+		const int32 Count = GroupPair.Value;
 
-			// Takes item of type
-			for (FConnectorResolution Connection : Connections) {
+		if (Key.CycleTime <= 0.f)
+		{
+			continue;
+		}
 
-				if (AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Connection.SourceOwner)) {
+		const float CyclesPerMinute = 60.f / Key.CycleTime * static_cast<float>(Count);
+		const float ProducedRateMultiplier = CyclesPerMinute * Key.ProductionBoost;
+		const float ConsumedRateMultiplier = CyclesPerMinute;
 
-					// Machine data
-					float productionAmplifier = Manufacturer->GetCurrentProductionBoost();
-					float cycleTime = Manufacturer->GetProductionCycleTime();
 
-					UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]         Manufacturer: %s, cycleTime: %.2f, productionAmplifier: %.2f"),
-						*Manufacturer->GetName(), cycleTime, productionAmplifier);
+		for (const FItemAmount& Product : UFGRecipe::GetProducts(Key.Recipe))
+		{
+			Sheet.FindOrAdd(Product.ItemClass).ProducedRate += Product.Amount * ProducedRateMultiplier;
+		}
 
-					// Get products
-					TSubclassOf<class UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
-					TArray<FItemAmount> Products = UFGRecipe::GetProducts(Recipe);
-
-					UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]         Recipe: %s, %d products"),
-						Recipe ? *Recipe->GetName() : TEXT("null"), Products.Num());
-
-					// Only products that match the connector type we're looking through
-					for (FItemAmount Product : Products) {
-						TSubclassOf< class UFGItemDescriptor > item = Product.ItemClass;
-						int amount = Product.Amount;
-
-						if (MapItemType(UFGItemDescriptor::GetForm(item)) == Connection.Kind) {
-							// mafs
-							float producedAmount = 60 / cycleTime * amount * productionAmplifier;
-
-							UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]           + %s: raw %d * 60/%.2f * %.2f = %.2f/min"),
-								*item->GetName(), amount, cycleTime, productionAmplifier, producedAmount);
-
-							if (ItemSet.Contains(item)) {
-								ItemSet[item] += producedAmount;
-								UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]             accumulated: %.2f/min"), ItemSet[item]);
-							}
-							else {
-								ItemSet.Add(item, producedAmount);
-							}
-
-						}
-						else {
-							UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]           - %s skipped (form mismatch)"), *item->GetName());
-						}
-					}
-				}
-				else {
-					UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       Not a manufacturer, skipping"));
-				}
-			}
+		for (const FItemAmount& Ingredient : UFGRecipe::GetIngredients(this, Key.Recipe))
+		{
+			Sheet.FindOrAdd(Ingredient.ItemClass).ConsumedRate += Ingredient.Amount * ConsumedRateMultiplier;
 		}
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] GetProducedItems final: %d items"), ItemSet.Num());
+	// --- Pass 3: classify each item's net balance against BoundaryRefs. ---
+	for (TPair<TSubclassOf<UFGItemDescriptor>, FItemBalance>& Pair : Sheet)
+	{
+		FItemBalance& Balance = Pair.Value;
+		Balance.NetRate = Balance.ProducedRate - Balance.ConsumedRate;
 
-	return ItemSet;
+		const EFactoryConnectionKind ItemKind = MapItemType(UFGItemDescriptor::GetForm(Pair.Key));
+		const bool bHasMatchingBoundary = BoundaryRefs.ContainsByPredicate([&](const FResolvedEndpoint& Boundary)
+			{
+				return Boundary.Kind == ItemKind;
+			});
+
+		if (Balance.NetRate < -KINDA_SMALL_NUMBER)
+		{
+			// Deficit is never gated by config -- underflow always surfaces.
+			Balance.Status = bHasMatchingBoundary ? EItemBalanceStatus::Imported : EItemBalanceStatus::Deficit;
+		}
+		else if (Balance.NetRate > KINDA_SMALL_NUMBER)
+		{
+			Balance.Status = bHasMatchingBoundary
+				? EItemBalanceStatus::Exported
+				: (bInFlagOverflowAsInefficient ? EItemBalanceStatus::Surplus : EItemBalanceStatus::Balanced);
+		}
+		else
+		{
+			Balance.Status = EItemBalanceStatus::Balanced;
+		}
+	}
+
+	return Sheet;
 }
 
-TMap<TSubclassOf< class UFGItemDescriptor >, float> UFactoryCluster::GetConsumedItems(TArray<FString>& out_InputErrors) const
+TMap<TSubclassOf<class UFGItemDescriptor>, float> UFactoryCluster::GetProducedItems() const
 {
-	TMap<TSubclassOf< class UFGItemDescriptor >, float> ItemSet;
+	TMap<TSubclassOf<UFGItemDescriptor>, float> Result;
+	const TMap<TSubclassOf<UFGItemDescriptor>, FItemBalance> Sheet = ComputeItemBalanceSheet(bFlagOverflowAsInefficient);
 
-	for (FResolvedEndpoint Endpoint : BoundaryRefs) {
-
-		// Only if output
-		if (Endpoint.EndpointDirection == EConnectionDirection::Output) {
-
-			// An input boundary's output connects to the next buildings' input.
-			TArray<FConnectorResolution> Connections = GetConnectorsTo(Endpoint.Buildable.Get(), EConnectionDirection::Input);
-
-			// Currently takes all items of type
-			for (FConnectorResolution Connection : Connections) {
-				continue; // TODO
-			}
-
+	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemBalance>& Pair : Sheet)
+	{
+		if (Pair.Value.Status == EItemBalanceStatus::Exported)
+		{
+			Result.Add(Pair.Key, Pair.Value.NetRate);
 		}
 	}
 
-	return ItemSet;
+	return Result;
+}
+
+TMap<TSubclassOf<class UFGItemDescriptor>, float> UFactoryCluster::GetConsumedItems() const
+{
+	TMap<TSubclassOf<UFGItemDescriptor>, float> Result;
+	const TMap<TSubclassOf<UFGItemDescriptor>, FItemBalance> Sheet = ComputeItemBalanceSheet(bFlagOverflowAsInefficient);
+
+	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemBalance>& Pair : Sheet)
+	{
+		if (Pair.Value.Status == EItemBalanceStatus::Imported)
+		{
+			Result.Add(Pair.Key, Pair.Value.NetRate);
+		}
+	}
+
+	return Result;
 }
 
 void UFactoryCluster::RebuildEndpointIndex()
@@ -250,7 +292,7 @@ EFactoryConnectionKind UFactoryCluster::MapItemType(EResourceForm ResourceForm) 
 	switch (ResourceForm)
 	{
 	case EResourceForm::RF_LIQUID:
-		return EFactoryConnectionKind::Fluid;
+		return EFactoryConnectionKind::Fluid; 
 	case EResourceForm::RF_GAS:
 		return EFactoryConnectionKind::Fluid;
 	default:
