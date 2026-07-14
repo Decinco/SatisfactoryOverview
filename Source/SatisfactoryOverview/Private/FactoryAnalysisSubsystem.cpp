@@ -11,6 +11,7 @@
 #include "Buildables/FGBuildableFactory.h"
 #include "Buildables/FGBuildableConveyorBase.h"
 #include "Buildables/FGBuildableConveyorAttachment.h"
+#include "Buildables/FGBuildablePipelineAttachment.h"
 
 // Utility for union-find clustering
 #include "Kismet/GameplayStatics.h"
@@ -58,16 +59,20 @@ void UFactoryAnalysisSubsystem::ProcessConveyor(AFGBuildableConveyorBase* const&
 	FactoryUnionFind.MakeSet(Buildable);
 
 	// Just union connections
-	AFGBuildable* Connected0 = Buildable->GetConnection0()->GetOuterBuildable();
-	if (!Cast<AFGBuildableFactory>(Connected0)) {
-		FactoryUnionFind.MakeSet(Connected0);
-		FactoryUnionFind.Union(Buildable, Connected0);
+	if (Buildable->GetConnection0()->IsConnected()) {
+		AFGBuildable* Connected0 = Buildable->GetConnection0()->GetConnection()->GetOuterBuildable();
+		if (!Cast<AFGBuildableFactory>(Connected0)) {
+			FactoryUnionFind.MakeSet(Connected0);
+			FactoryUnionFind.Union(Buildable, Connected0);
+		}
 	}
 
-	AFGBuildable* Connected1 = Buildable->GetConnection1()->GetOuterBuildable();
-	if (!Cast<AFGBuildableFactory>(Connected1)) {
-		FactoryUnionFind.MakeSet(Connected1);
-		FactoryUnionFind.Union(Buildable, Connected1);
+	if (Buildable->GetConnection1()->IsConnected()) {
+		AFGBuildable* Connected1 = Buildable->GetConnection1()->GetConnection()->GetOuterBuildable();
+		if (!Cast<AFGBuildableFactory>(Connected1)) {
+			FactoryUnionFind.MakeSet(Connected1);
+			FactoryUnionFind.Union(Buildable, Connected1);
+		}
 	}
 }
 
@@ -98,6 +103,18 @@ void UFactoryAnalysisSubsystem::BeginFactoryProcessing()
 
 void UFactoryAnalysisSubsystem::ProcessFactory(AFGBuildableFactory* const& Buildable, int32 Index)
 {
+	// Containers are skipped, their logic lives in the third pass.
+	if (Cast<AFGBuildableStorage>(Buildable) && !Cast<AFGCentralStorageContainer>(Buildable))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Skipping buildable %s (index %d) because it is a container."), *Buildable->GetName(), Index);
+		return;
+	}
+
+	// Pipe attachments are NOT actually helping produce anything and thus are useless here. Skip them.
+	if (Cast<AFGBuildablePipelineAttachment>(Buildable)) {
+		return;
+	}
+
 	// Get all factory connection components for this buildable
 	TArray<UFGFactoryConnectionComponent*> FactoryConnectors;
 	FactoryConnectors = Buildable->GetConnectionComponents();
@@ -112,18 +129,12 @@ void UFactoryAnalysisSubsystem::ProcessFactory(AFGBuildableFactory* const& Build
 		return;
 	}
 
-	// Containers are skipped, their logic lives in the third pass.
-	if (Cast<AFGBuildableStorage>(Buildable) && !Cast<AFGCentralStorageContainer>(Buildable))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Skipping buildable %s (index %d) because it is a container."), *Buildable->GetName(), Index);
-		return;
-	}
-
 	FactoryUnionFind.MakeSet(Buildable);
 
 	// Unions anything connected via belt, from the net union type present previously
 	for (UFGFactoryConnectionComponent* Connection : FactoryConnectors) {
-		AFGBuildable* Outer = Connection->GetOuterBuildable();
+		if (!Connection->IsConnected()) continue;
+		AFGBuildable* Outer = Connection->GetConnection()->GetOuterBuildable();
 
 		// Assumes that the connected belts are already in the set, lmao
 		FactoryUnionFind.Union(Buildable, Outer);
@@ -144,8 +155,6 @@ void UFactoryAnalysisSubsystem::ProcessFactory(AFGBuildableFactory* const& Build
 
 void UFactoryAnalysisSubsystem::BeginContainerProcessing() 
 {
-	FactoryUnionFind = FBuildableUnionFind();
-
 	TArray<AActor*> AllActors;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFGBuildableStorage::StaticClass(), AllActors);
 
@@ -193,7 +202,7 @@ void UFactoryAnalysisSubsystem::ProcessContainer(AFGBuildableStorage* const& Bui
 
 	// Do actual things now
 	if (bTreatContainersAsFactoryEnd && bIsConnectedOnBothSides) {
-		// Sike, I dn't know how to do this yet
+		// Sike, I don't know how to do this yet
 	}
 	else {
 
@@ -201,7 +210,11 @@ void UFactoryAnalysisSubsystem::ProcessContainer(AFGBuildableStorage* const& Bui
 
 		// Assumes all belts have a set
 		for (UFGFactoryConnectionComponent* Connector : ContainerConnectors) {
-			FactoryUnionFind.Union(Buildable, Connector->GetOuterBuildable());
+			if (!Connector->IsConnected()) continue;
+			AFGBuildable* Outer = Connector->GetConnection()->GetOuterBuildable();
+
+			// i forgor
+			FactoryUnionFind.Union(Buildable, Outer);
 		}
 	}
 }
@@ -223,13 +236,19 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 	for (auto& RawClusterPair : FactoryUnionFind.GetClusters())
 	{
 		UFactoryCluster* Cluster = NewObject<UFactoryCluster>(this);
+		bool bHasBuildables = false;
 		for (AFGBuildable* Member : RawClusterPair.Value)
 		{
 			if (AFGBuildableFactory* MemberFactory = Cast<AFGBuildableFactory>(Member)) {
+				bHasBuildables = true;
 				Cluster->Members.Add(MemberFactory);
 			}
 		}
-		Clusters.Add(Cluster);
+
+		// have no buildables? die lmao
+		if (bHasBuildables) {
+			Clusters.Add(Cluster);
+		}
 	}
 
 	// Log results
@@ -239,6 +258,20 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]   Cluster (root=%s): %d buildables, %d boundary refs, IsNature=%d"),
 			*Cluster->GetName(), Cluster->Members.Num(), Cluster->BoundaryRefs.Num(), Cluster->IsNature());
+
+		for (const TWeakObjectPtr<AFGBuildableFactory>& WeakMember : Cluster->Members) {
+			AFGBuildableFactory* Member = WeakMember.Get();
+			if (!Member) continue;
+			if (AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Member)) {
+				TSubclassOf<UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
+				UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     %s -> Recipe: %s"),
+					*Manufacturer->GetName(), Recipe ? *Recipe->GetName() : TEXT("none"));
+			}
+			else {
+				UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     %s (not a manufacturer)"),
+					*Member->GetName());
+			}
+		}
 
 		// Print items produced.
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Items produced:"));
@@ -262,5 +295,16 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 	
 void UFactoryAnalysisSubsystem::Tick(float DeltaTime)
 {
-	FactoryWorkQueue.ProcessBudget();
+	if (!ConveyorWorkQueue.IsComplete())
+	{
+		ConveyorWorkQueue.ProcessBudget();
+	}
+	else if (!FactoryWorkQueue.IsComplete())
+	{
+		FactoryWorkQueue.ProcessBudget();
+	}
+	else if (!ContainerWorkQueue.IsComplete())
+	{
+		ContainerWorkQueue.ProcessBudget();
+	}
 }

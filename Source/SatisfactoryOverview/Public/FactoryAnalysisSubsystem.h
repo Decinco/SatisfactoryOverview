@@ -32,7 +32,10 @@ public:
 	void StartScan();
 
 	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis")
-	bool IsScanInProgress() const { return !FactoryWorkQueue.IsComplete(); }
+	bool IsScanInProgress() const { return !ConveyorWorkQueue.IsComplete()
+		|| !FactoryWorkQueue.IsComplete()
+		|| !ContainerWorkQueue.IsComplete();
+	}
 
 	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis")
 	float GetScanProgress() const { return FactoryWorkQueue.GetProgress(); }
