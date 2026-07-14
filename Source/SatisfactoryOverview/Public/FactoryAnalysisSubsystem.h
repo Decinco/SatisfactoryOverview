@@ -32,10 +32,10 @@ public:
 	void StartScan();
 
 	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis")
-	bool IsScanInProgress() const { return !WorkQueue.IsComplete(); }
+	bool IsScanInProgress() const { return !FactoryWorkQueue.IsComplete(); }
 
 	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis")
-	float GetScanProgress() const { return WorkQueue.GetProgress(); }
+	float GetScanProgress() const { return FactoryWorkQueue.GetProgress(); }
 
 	UPROPERTY(BlueprintAssignable, Category = "FactoryAnalysis")
 	FOnFactoryScanFinished OnFactoryScanFinished;
@@ -46,17 +46,29 @@ public:
 	virtual bool IsTickable() const override { return IsScanInProgress(); }
 
 private:
-	/** Per-item processing: register in union-find, follow connectors, record pipe network membership. */
-	void ProcessBuildable(AFGBuildableFactory* const& Buildable, int32 Index);
+	/** Unions conveyors between themselves. */
+	void ProcessConveyor(AFGBuildableConveyorBase* const& Buildable, int32 Index);
 
-	/** Runs once the work queue finishes: pipe-network merge pass + classification + logging. */
+	/** Unions factory buildings to already existing networks. */
+	void ProcessFactory(AFGBuildableFactory* const& Buildable, int32 Index);
+
+	/** Applies conditional filtering for containers. */
+	void ProcessContainer(AFGBuildableStorage* const& Buildable, int32 Index);
+
+	/** Prepares factory processing */
+	void BeginFactoryProcessing();
+
+	/** Prepares container processing */
+	void BeginContainerProcessing();
+
+	/** Runs once all work queues finish  */
 	void OnScanComplete();
 
-	/** Builds the ConnectorGraph for a cluster, using the union-find data structure to find connected components. */
-	void BuildConnectorGraph(UFactoryCluster* Cluster);
-
-	TBudgetedWorkQueue<AFGBuildableFactory*> WorkQueue;
-	FBuildableUnionFind UnionFind;
+	/** Work queues and Union-Find */
+	TBudgetedWorkQueue<AFGBuildableConveyorBase*> ConveyorWorkQueue;
+	TBudgetedWorkQueue<AFGBuildableFactory*> FactoryWorkQueue;
+	TBudgetedWorkQueue<AFGBuildableStorage*> ContainerWorkQueue;
+	FBuildableUnionFind FactoryUnionFind;
 
 	// Boundary connections to be added to the cluster after the scan completes.
 	TMap<TWeakObjectPtr<AFGBuildableFactory>, TArray<FResolvedEndpoint>> PendingBoundaryEndpoints;
