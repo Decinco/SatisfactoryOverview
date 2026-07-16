@@ -74,6 +74,27 @@ struct FResolvedEndpoint
 			&& BoundType == Other.BoundType;
 	}
 };
+
+/**
+ * Returned struct representing items involved in a factory and their states.
+ */
+USTRUCT(BlueprintType)
+struct FItemBalance
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TMap<TSubclassOf<class UFGItemDescriptor>, float> Export;
+
+	UPROPERTY()
+	TMap<TSubclassOf<class UFGItemDescriptor>, float> Import;
+
+	UPROPERTY()
+	TMap<TSubclassOf<class UFGItemDescriptor>, float> Surplus;
+
+	UPROPERTY()
+	TMap<TSubclassOf<class UFGItemDescriptor>, float> Deficit;
+};
  
 /**
  * Represents an connection between two factories. IGNORE CONTAINERS, this explicitly exists to calculate the production lines themselves.

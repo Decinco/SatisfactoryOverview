@@ -74,7 +74,7 @@ private:
 	FBuildableUnionFind FactoryUnionFind;
 
 	// Boundary connections to be added to the cluster after the scan completes.
-	TMap<TWeakObjectPtr<AFGBuildableFactory>, TArray<FResolvedEndpoint>> PendingBoundaryEndpoints;
+	TMap<TWeakObjectPtr<AFGBuildableFactory>, TArray<FItemBalance>> PendingBoundaryEndpoints;
 
 	// Populated during ProcessBuildable, consumed in OnScanComplete's pipe-merge pass.
 	TMap<int32, TArray<AFGBuildableFactory*>> PipeNetworkGroups; // ADJUST: confirm real pipe network ID type (assumed int32 here)

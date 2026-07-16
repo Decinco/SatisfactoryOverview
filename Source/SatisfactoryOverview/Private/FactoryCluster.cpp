@@ -1,35 +1,36 @@
 #include "FactoryCluster.h"
 #include "ItemAmount.h"
+#include "FactoryConnectionResolver.h"
+#include "FGPipeConnectionComponent.h"
 
 // Generic energy-accepting buildable
 #include "Buildables/FGBuildableFactory.h"
 
-// Generic crafter (aka factories or machines)
+// Manufacturer Types
 #include "Buildables/FGBuildableManufacturer.h"
 
-// Generic resource extractor
+// Producer Types
 #include "Buildables/FGBuildableResourceExtractor.h"
 
-// Generic energy producer (aka generators) 
+// Consumer Types 
 #include "Buildables/FGBuildableGenerator.h"
+#include "FGBuildablePowerBooster.h"
+#include "Buildables/FGBuildablePortal.h"
 
-// Station classes
+// ProducerConsumer Types
+#include "Buildables/FGBuildableGeneratorNuclear.h"
+
+// Bound Types
 #include "Buildables/FGBuildableDockingStation.h"		// Road
 #include "Buildables/FGBuildableTrainPlatformCargo.h"	// Rail
 #include "Buildables/FGBuildableDroneStation.h"			// Air
+#include "Buildables/FGBuildableSpaceElevator.h"		// Space????
 
-// Spelevator
-#include "Buildables/FGBuildableSpaceElevator.h"		// Isn't it technically a station for space?
-
-// Sink
-#include "Buildables/FGBuildableResourceSink.h"
-
-// Containers
-#include "Buildables/FGBuildableStorage.h"				// Solid
-#include "Buildables/FGBuildablePipeReservoir.h"		// Fluid
-
-// Dimensional Depot
+#include "Buildables/FGBuildableStorage.h"				// Solid Container
+#include "Buildables/FGBuildablePipeReservoir.h"		// Fluid Container
 #include "Buildables/FGCentralStorageContainer.h"
+
+#include "Buildables/FGBuildableResourceSink.h"			// AWESOME!
 
 namespace
 {
@@ -45,8 +46,8 @@ namespace
 		bool operator==(const FRecipeGroupKey& Other) const
 		{
 			return Recipe == Other.Recipe
-				&& FMath::IsNearlyEqual(CycleTime, Other.CycleTime)
-				&& FMath::IsNearlyEqual(ProductionBoost, Other.ProductionBoost);
+				&& CycleTime == Other.CycleTime
+				&& ProductionBoost == Other.ProductionBoost;
 		}
 	};
 
@@ -58,10 +59,26 @@ namespace
 	}
 }
 
+TArray<TWeakObjectPtr<AFGBuildableFactory>> UFactoryCluster::GetMembers() const {
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> Members;
+
+	Members.Append(UnclassifiedMembers);
+
+	Members.Append(Manufacturers);
+	Members.Append(Producers);
+	Members.Append(Consumers);
+	Members.Append(ProducerConsumers);
+	Members.Append(Bounds);
+
+	return Members;
+}
+
 TArray<AFGBuildableFactory*> UFactoryCluster::GetValidMembers() const
 {
 	// Stored here are weak references to the buildables. We're returning the buildables themselves.
 	TArray<AFGBuildableFactory*> Result;
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> Members = GetMembers();
+
 	Result.Reserve(Members.Num());
 	for (const TWeakObjectPtr<AFGBuildableFactory>& Weak : Members)
 	{
@@ -73,219 +90,164 @@ TArray<AFGBuildableFactory*> UFactoryCluster::GetValidMembers() const
 	return Result;
 }
 
-EFactoryBoundaryType UFactoryCluster::ClassifyTerminal(AFGBuildable* Buildable)
-{
-	if (!Buildable) return EFactoryBoundaryType::None;
-
-	// Plain Boundary: vehicle stations, AWESOME Sink, Space Elevator.
-	if (Cast<AFGBuildableDockingStation>(Buildable)
-		|| Cast<AFGBuildableDroneStation>(Buildable)
-		|| Cast<AFGBuildableTrainPlatformCargo>(Buildable)
-		|| Cast<AFGBuildableSpaceElevator>(Buildable)
-		|| Cast<AFGBuildableResourceSink>(Buildable))
-	{
-		return EFactoryBoundaryType::Boundary;
-	}
-
-	// Generators: power generators, biofuel generators, etc.
-	if (Cast<AFGBuildableGenerator>(Buildable))
-	{
-		return EFactoryBoundaryType::Generator;
-	}
-
-	// Extractors: resource extractors, water extractors, etc.
-	if (Cast<AFGBuildableResourceExtractor>(Buildable))
-	{
-		return EFactoryBoundaryType::Extractor;
-	}
-
-	// Dimensional Depot
-	if (Cast<AFGCentralStorageContainer>(Buildable))
-	{
-		return EFactoryBoundaryType::DimensionalDepot;
-	}
-
-	return EFactoryBoundaryType::None;
-}
-
-bool UFactoryCluster::IsBoundaryBuildable(AFGBuildable* Buildable)
-{
-
-	return ClassifyTerminal(Buildable) != EFactoryBoundaryType::None;
-}
-
 bool UFactoryCluster::IsNature() const
 {
-	// A factory is considered "nature" if it has it least one extractor and boundary, but no manufacturers.
-
-	bool bHasExtractor = false;
-	bool bHasBoundary = false;
-	bool bHasManufacturer = false;
-
-	for (const TWeakObjectPtr<AFGBuildableFactory>& Weak : Members)
-	{
-		AFGBuildableFactory* M = Weak.Get();
-		if (!M) continue;
-
-		const EFactoryBoundaryType Kind = ClassifyTerminal(M);
-		if (Kind == EFactoryBoundaryType::Extractor) bHasExtractor = true;
-		if (Kind == EFactoryBoundaryType::Boundary) bHasBoundary = true;
-		if (Cast<AFGBuildableManufacturer>(M)) bHasManufacturer = true;
-	}
-
-	return bHasExtractor && bHasBoundary && !bHasManufacturer;
+	// There can only be bounds and producers and BOTH must be present in some way.
+	return Manufacturers.IsEmpty() && Consumers.IsEmpty() && ProducerConsumers.IsEmpty() && !Bounds.IsEmpty() && !Producers.IsEmpty();
 }
 
-TMap<TSubclassOf<class UFGItemDescriptor>, FItemBalance> UFactoryCluster::ComputeItemBalanceSheet(bool bInFlagOverflowAsInefficient) const
+FItemBalance UFactoryCluster::ComputeItemBalanceSheet(bool bInFlagOverflowAsInefficient) const
 {
-	// --- Pass 1: group manufacturers by identical production rate. ---
-	TMap<FRecipeGroupKey, int32> GroupCounts;
+	FItemBalance Result;
 
-	for (const TWeakObjectPtr<AFGBuildableFactory>& Weak : Members)
+	// Find out items in Manufacturers' recipes
+	TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> Sheet;
+
+	for (const TWeakObjectPtr<AFGBuildableFactory>& WeakManufacturer : Manufacturers)
 	{
-		AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Weak.Get());
+		// Get manufacturer. Should always be a manufacturer (duh).
+		AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(WeakManufacturer.Get());
 		if (!Manufacturer) continue;
 
-		TSubclassOf<UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
-		if (!Recipe) continue;
+		const float CycleTime = Manufacturer->GetProductionCycleTime();
+		const float ProductionBoost = Manufacturer->GetCurrentProductionBoost();
 
-		const FRecipeGroupKey Key{
-			Recipe,
-			Manufacturer->GetProductionCycleTime(),
-			Manufacturer->GetCurrentProductionBoost()
-		};
-		GroupCounts.FindOrAdd(Key)++;
-	}
-
-	// --- Pass 2: turn each group into produced/consumed rate contributions. ---
-	TMap<TSubclassOf<UFGItemDescriptor>, FItemBalance> Sheet;
-
-	for (const TPair<FRecipeGroupKey, int32>& GroupPair : GroupCounts)
-	{
-		const FRecipeGroupKey& Key = GroupPair.Key;
-		const int32 Count = GroupPair.Value;
-
-		if (Key.CycleTime <= 0.f)
+		if (CycleTime <= 0.f)
 		{
 			continue;
 		}
 
-		const float CyclesPerMinute = 60.f / Key.CycleTime * static_cast<float>(Count);
-		const float ProducedRateMultiplier = CyclesPerMinute * Key.ProductionBoost;
+		const float CyclesPerMinute = 60.f / CycleTime;
+		const float ProducedRateMultiplier = CyclesPerMinute * ProductionBoost;
 		const float ConsumedRateMultiplier = CyclesPerMinute;
 
+		auto Recipe = Manufacturer->GetCurrentRecipe();
 
-		for (const FItemAmount& Product : UFGRecipe::GetProducts(Key.Recipe))
+		for (const FItemAmount& Product : UFGRecipe::GetProducts(Recipe))
 		{
 			Sheet.FindOrAdd(Product.ItemClass).ProducedRate += Product.Amount * ProducedRateMultiplier;
 		}
 
-		for (const FItemAmount& Ingredient : UFGRecipe::GetIngredients(this, Key.Recipe))
+		for (const FItemAmount& Ingredient : UFGRecipe::GetIngredients(this, Recipe))
 		{
 			Sheet.FindOrAdd(Ingredient.ItemClass).ConsumedRate += Ingredient.Amount * ConsumedRateMultiplier;
 		}
 	}
 
-	// --- Pass 3: classify each item's net balance against BoundaryRefs. ---
-	for (TPair<TSubclassOf<UFGItemDescriptor>, FItemBalance>& Pair : Sheet)
-	{
-		FItemBalance& Balance = Pair.Value;
-		Balance.NetRate = Balance.ProducedRate - Balance.ConsumedRate;
+	// Find out additional production and consumption - TODO
 
-		const EFactoryConnectionKind ItemKind = MapItemType(UFGItemDescriptor::GetForm(Pair.Key));
-		const bool bHasMatchingBoundary = BoundaryRefs.ContainsByPredicate([&](const FResolvedEndpoint& Boundary)
+	// Producers
+	for (const TWeakObjectPtr<AFGBuildableFactory>& WeakProducer : Producers) {
+		AFGBuildableResourceExtractor* Producer = Cast<AFGBuildableResourceExtractor>(WeakProducer.Get());
+
+		// Get producer's production
+	}
+
+	// Find out output kind
+	TSet<TSubclassOf<UFGItemDescriptor>> ExportableViaBoundary;
+	TSet<TSubclassOf<UFGItemDescriptor>> ImportableViaBoundary;
+
+	for (const TWeakObjectPtr<AFGBuildableFactory>& WeakBound : Bounds)
+	{
+		AFGBuildableFactory* Bound = WeakBound.Get();
+		if (!Bound) continue;
+
+		// Get all importable
+		for (const FConnectorResolution& Connection : GetConnectionsFrom(Bound, EConnectionDirection::Output))
+		{
+			for (const FResolvedEndpoint& Endpoint : Connection.Endpoints)
 			{
-				return Boundary.Kind == ItemKind;
-			});
-
-		if (Balance.NetRate < -KINDA_SMALL_NUMBER)
-		{
-			// Deficit is never gated by config -- underflow always surfaces.
-			Balance.Status = bHasMatchingBoundary ? EItemBalanceStatus::Imported : EItemBalanceStatus::Deficit;
+				AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Endpoint.Buildable.Get());
+				if (!Manufacturer) continue;
+				TSubclassOf<UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
+				if (!Recipe) continue;
+				for (const FItemAmount& Ingredient : UFGRecipe::GetIngredients(this, Recipe))
+				{
+					ImportableViaBoundary.Add(Ingredient.ItemClass);
+				}
+			}
 		}
-		else if (Balance.NetRate > KINDA_SMALL_NUMBER)
+
+		// Get all exportable
+		for (const FConnectorResolution& Connection : GetConnectionsFrom(Bound, EConnectionDirection::Input))
 		{
-			Balance.Status = bHasMatchingBoundary
-				? EItemBalanceStatus::Exported
-				: (bInFlagOverflowAsInefficient ? EItemBalanceStatus::Surplus : EItemBalanceStatus::Balanced);
-		}
-		else
-		{
-			Balance.Status = EItemBalanceStatus::Balanced;
-		}
-	}
-
-	return Sheet;
-}
-
-TMap<TSubclassOf<class UFGItemDescriptor>, float> UFactoryCluster::GetProducedItems() const
-{
-	TMap<TSubclassOf<UFGItemDescriptor>, float> Result;
-	const TMap<TSubclassOf<UFGItemDescriptor>, FItemBalance> Sheet = ComputeItemBalanceSheet(bFlagOverflowAsInefficient);
-
-	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemBalance>& Pair : Sheet)
-	{
-		if (Pair.Value.Status == EItemBalanceStatus::Exported)
-		{
-			Result.Add(Pair.Key, Pair.Value.NetRate);
-		}
-	}
-
-	return Result;
-}
-
-TMap<TSubclassOf<class UFGItemDescriptor>, float> UFactoryCluster::GetConsumedItems() const
-{
-	TMap<TSubclassOf<UFGItemDescriptor>, float> Result;
-	const TMap<TSubclassOf<UFGItemDescriptor>, FItemBalance> Sheet = ComputeItemBalanceSheet(bFlagOverflowAsInefficient);
-
-	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemBalance>& Pair : Sheet)
-	{
-		if (Pair.Value.Status == EItemBalanceStatus::Imported)
-		{
-			Result.Add(Pair.Key, Pair.Value.NetRate);
-		}
-	}
-
-	return Result;
-}
-
-void UFactoryCluster::RebuildEndpointIndex()
-{
-	EndpointIndex.Empty();
-	for (int32 i = 0; i < ConnectorGraph.Num(); ++i)
-	{
-		for (const FResolvedEndpoint& Endpoint : ConnectorGraph[i].Endpoints)
-		{
-			if (AFGBuildableFactory* Buildable = Endpoint.Buildable.Get())
+			for (const FResolvedEndpoint& Endpoint : Connection.Endpoints)
 			{
-				EndpointIndex.FindOrAdd(Buildable).Add(i);
+				AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Endpoint.Buildable.Get());
+				if (!Manufacturer) continue;
+				TSubclassOf<UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
+				if (!Recipe) continue;
+				for (const FItemAmount& Product : UFGRecipe::GetProducts(Recipe))
+				{
+					ExportableViaBoundary.Add(Product.ItemClass);
+				}
 			}
 		}
 	}
-}
 
-TArray<FConnectorResolution> UFactoryCluster::GetConnectorsTo(AFGBuildableFactory* Target, EConnectionDirection Direction) const
-{
-	TArray<FConnectorResolution> Result;
-	if (!Target)
+	// Classify outputs
+	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemRate>& Pair : Sheet)
 	{
-		return Result;
-	}
+		const TSubclassOf<UFGItemDescriptor>& Item = Pair.Key;
+		const float NetRate = Pair.Value.ProducedRate - Pair.Value.ConsumedRate;
 
-	if (const TArray<int32>* Indices = EndpointIndex.Find(Target))
-	{
-		Result.Reserve(Indices->Num());
-		for (int32 Index : *Indices)
+		if (NetRate > KINDA_SMALL_NUMBER)
 		{
-			if (ConnectorGraph.IsValidIndex(Index) && ConnectorGraph[Index].SourceDirection == Direction)
+			if (ExportableViaBoundary.Contains(Item) || Pair.Value.bIsBounded) // Producers and consumers will count as bounds for this
 			{
-				Result.Add(ConnectorGraph[Index]);
+				Result.Export.Add(Item, NetRate);
+			}
+			else
+			{
+				Result.Surplus.Add(Item, NetRate);
+			}
+		}
+		else if (NetRate < -KINDA_SMALL_NUMBER)
+		{
+			if (ImportableViaBoundary.Contains(Item) || Pair.Value.bIsBounded) // Producers and consumers will count as bounds for this
+			{
+				Result.Import.Add(Item, -NetRate);
+			}
+			else
+			{
+				Result.Deficit.Add(Item, -NetRate);
 			}
 		}
 	}
 
 	return Result;
+}
+
+TArray<FConnectorResolution> UFactoryCluster::GetConnectionsFrom(AFGBuildableFactory* Target, EConnectionDirection Direction) const
+{
+	TArray<FConnectorResolution> ConnectedFactories;
+
+	// Resolve belt connections
+	for (UFGFactoryConnectionComponent* Connection : Target->GetConnectionComponents()) {
+		if (FConnectionDirectionMapper::Map(Connection->GetDirection()) == Direction) {
+			TSet<AFGBuildable*> Visited;
+
+			FConnectorResolution Resolution;
+			Resolution.SourceConnector = Connection;
+			Resolution.SourceDirection = Direction;
+			Resolution.Endpoints = FactoryConnectionResolver::ResolveBeltConnections(Connection, Visited);
+			Resolution.Kind = EFactoryConnectionKind::Item;
+			Resolution.SourceOwner = Target;
+			ConnectedFactories.Add(MoveTemp(Resolution));
+		}
+	}
+
+	// Resolve pipe connections
+	TArray<UFGPipeConnectionComponent*> PipeConnections;
+	Target->GetComponents<UFGPipeConnectionComponent>(PipeConnections);
+	for (UFGPipeConnectionComponent* PipeConn : PipeConnections) {
+		EConnectionDirection PipeDir = FConnectionDirectionMapper::Map(PipeConn->GetPipeConnectionType());
+		if (PipeDir == Direction || PipeDir == EConnectionDirection::Any) {
+			ConnectedFactories.Add(FactoryConnectionResolver::ResolvePipeConnections(Target, PipeConn, PipeNetworkGroups));
+		}
+	}
+
+	return ConnectedFactories;
 }
 
 EFactoryConnectionKind UFactoryCluster::MapItemType(EResourceForm ResourceForm) const {
@@ -297,5 +259,72 @@ EFactoryConnectionKind UFactoryCluster::MapItemType(EResourceForm ResourceForm) 
 		return EFactoryConnectionKind::Fluid;
 	default:
 		return EFactoryConnectionKind::Item;
+	}
+}
+
+void UFactoryCluster::AddToFactory(AFGBuildableFactory* Buildable) {
+	if (!Buildable) return;
+
+	if (Cast<AFGBuildableManufacturer>(Buildable)) {
+		Manufacturers.Add(Buildable);
+	}
+	else if (Cast<AFGBuildableResourceExtractor>(Buildable)) {
+		Producers.Add(Buildable);
+	}
+	// Nuclear before generic generator — it's a subclass of generator
+	else if (Cast<AFGBuildableGeneratorNuclear>(Buildable)) {
+		ProducerConsumers.Add(Buildable);
+	}
+	else if (Cast<AFGBuildableGenerator>(Buildable)) {
+		Consumers.Add(Buildable);
+	}
+	else if (Cast<AFGBuildablePowerBooster>(Buildable)) {
+		Consumers.Add(Buildable);
+	}
+	else if (Cast<AFGBuildablePortal>(Buildable)) {
+		Consumers.Add(Buildable);
+	}
+	else if (Cast<AFGBuildableDockingStation>(Buildable)
+		|| Cast<AFGBuildableTrainPlatformCargo>(Buildable)
+		|| Cast<AFGBuildableDroneStation>(Buildable)
+		|| Cast<AFGBuildableSpaceElevator>(Buildable)
+		|| Cast<AFGCentralStorageContainer>(Buildable)
+		|| Cast<AFGBuildablePipeReservoir>(Buildable)
+		|| Cast<AFGBuildableResourceSink>(Buildable)) {
+		Bounds.Add(Buildable);
+	}
+	else if (Cast<AFGBuildableStorage>(Buildable)) {
+		// Get all connectors
+		TArray<UFGFactoryConnectionComponent*> ContainerConnectors;
+		ContainerConnectors = Buildable->GetConnectionComponents();
+
+		bool bIsOutputConnected = false;
+		bool bIsInputConnected = false;
+
+		// Determine how many sides are connected.
+		for (UFGFactoryConnectionComponent* Connector : ContainerConnectors) {
+			if (Connector->IsConnected()) {
+				if (Connector->GetDirection() == EFactoryConnectionDirection::FCD_INPUT) {
+					bIsInputConnected = true;
+				}
+				else if (Connector->GetDirection() == EFactoryConnectionDirection::FCD_OUTPUT) {
+					bIsOutputConnected = true;
+				}
+			}
+		}
+
+		// Check if the container is connected both sides
+		bool bIsConnectedOnOneSide = bIsOutputConnected == !bIsInputConnected;
+
+		// Check connections
+		if (bIsConnectedOnOneSide) {
+			Bounds.Add(Buildable);
+		}
+		else {
+			UnclassifiedMembers.Add(Buildable);
+		}
+	}
+	else {
+		UnclassifiedMembers.Add(Buildable);
 	}
 }

@@ -9,7 +9,7 @@
 #include <Buildables/FGBuildableConveyorBase.h>
 
 
-TArray <FResolvedEndpoint> FactoryConnectionResolver::ResolveBeltConnections(UFGFactoryConnectionComponent* StartConnector, TSet<AFGBuildable*>& Visited)
+TArray<FResolvedEndpoint> FactoryConnectionResolver::ResolveBeltConnections(UFGFactoryConnectionComponent* StartConnector, TSet<AFGBuildable*>& Visited)
 {
 	TArray<FResolvedEndpoint> Result;
 	UFGFactoryConnectionComponent* Current = StartConnector;
@@ -20,17 +20,17 @@ TArray <FResolvedEndpoint> FactoryConnectionResolver::ResolveBeltConnections(UFG
 		if (Visited.Contains(Outer)) break;
 		Visited.Add(Outer);
 
-		// Terminal Check
-		const EFactoryBoundaryType Terminal = UFactoryCluster::ClassifyTerminal(Outer);
-		if (Terminal != EFactoryBoundaryType::None)
+		// When resolving FROM a container boundary, skip past the container
+		// and follow the connection to the other end so we reach the machines.
+		if (Current == StartConnector && Cast<AFGBuildableStorage>(Outer))
 		{
-			FResolvedEndpoint Endpoint;
-			Endpoint.Buildable = Cast<AFGBuildableFactory>(Outer);
-			Endpoint.Kind = EFactoryConnectionKind::Item;
-			Endpoint.EndpointDirection = FConnectionDirectionMapper::Map(Current->GetDirection());
-			Endpoint.BoundType = Terminal;
-			Result.Add(Endpoint);
-			return Result;
+			Visited.Add(Outer);
+			if (Current->IsConnected())
+			{
+				Current = Current->GetConnection();
+				continue;
+			}
+			break;
 		}
 
 		if (AFGBuildableFactory* Factory = Cast<AFGBuildableFactory>(Outer))
@@ -55,7 +55,7 @@ TArray <FResolvedEndpoint> FactoryConnectionResolver::ResolveBeltConnections(UFG
 				return Result;
 			}
 
-			// Anything else factory-like (unclassified attachments etc.) -- pass through, ignored as terminals.
+			// Anything else factory-like (unclassified attachments etc.) 
 			for (UFGFactoryConnectionComponent* Conn : Factory->GetConnectionComponents())
 			{
 				if (Conn != Current && Conn->IsConnected())
@@ -177,7 +177,7 @@ FConnectorResolution FactoryConnectionResolver::ResolvePipeConnections(AFGBuilda
 			Endpoint.Buildable = Peer;
 			Endpoint.Kind = EFactoryConnectionKind::Fluid;
 			Endpoint.EndpointDirection = FConnectionDirectionMapper::Map(PeerConn->GetPipeConnectionType());
-			Endpoint.BoundType = UFactoryCluster::ClassifyTerminal(Peer);
+			Endpoint.BoundType = EFactoryBoundaryType::None;
 			Resolution.Endpoints.Add(Endpoint);
 		}
 	}

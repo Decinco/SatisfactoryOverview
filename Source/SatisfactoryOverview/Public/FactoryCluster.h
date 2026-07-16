@@ -29,7 +29,7 @@ enum class EItemBalanceStatus : uint8
 
 /** Represents item balance */
 USTRUCT(BlueprintType)
-struct FItemBalance
+struct FItemRate
 {
 	GENERATED_BODY()
 
@@ -47,6 +47,9 @@ struct FItemBalance
 
 	UPROPERTY(BlueprintReadOnly, Category = "FactoryAnalysis")
 	EItemBalanceStatus Status = EItemBalanceStatus::Balanced;
+
+	UPROPERTY(BlueprintReadOnly, Category = "FactoryAnalysis")
+	bool bIsBounded = false;
 };
 
 
@@ -65,60 +68,47 @@ public:
 	UPROPERTY()
 	bool bFlagOverflowAsInefficient = false;
 
-	UPROPERTY()
-	TArray<TWeakObjectPtr<AFGBuildableFactory>> Members;
+	/** Adds a building to one of the lists */
+	void AddToFactory(AFGBuildableFactory* Buildable);
 
-	/** Boundaries for this factory */
-	UPROPERTY()
-	TArray<FResolvedEndpoint> BoundaryRefs;
+	/** Returns all buildings */
+	UFUNCTION()
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> GetMembers() const;
 
-	/** Precomputed by BuildConnectorGraph. */
-	UPROPERTY()
-	TArray<FConnectorResolution> ConnectorGraph;
-
-	/** Builds EndpointIndex, to keep track of connections */
-	void RebuildEndpointIndex();
-
-	/** Returns only Members that are still valid (not demolished since the scan). */
+	/** Returns only buildings that are still valid (not demolished since the scan). */
 	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
 	TArray<AFGBuildableFactory*> GetValidMembers() const;
 
-	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis")
-	int32 GetMemberCount() const { return Members.Num(); }
-
-	/** Nature: only extractors + boundary, no processing machines at all. */
+	/** Nature: only extractors + boundary, no processing machines at all. Will likely be extended to define other factory types.*/
 	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis")
 	bool IsNature() const;
 
-	TArray<FConnectorResolution> GetConnectorsTo(AFGBuildableFactory* Target, EConnectionDirection Direction) const;
+	TArray<FConnectorResolution> GetConnectionsFrom(AFGBuildableFactory* Target, EConnectionDirection Direction) const;
 
 	/** Calculates factory's inputs and outputs by the amount produced and consumed within its machines */
 	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
-	TMap<TSubclassOf<class UFGItemDescriptor>, FItemBalance> ComputeItemBalanceSheet(bool bInFlagOverflowAsInefficient) const;
+	FItemBalance ComputeItemBalanceSheet(bool bInFlagOverflowAsInefficient) const;
 
-	/**
-	 * Returns items whose BalanceStatus is Exported.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
-	TMap<TSubclassOf< class UFGItemDescriptor >, float> GetProducedItems() const;
-
-	/**
-	 * Returns items whose BalanceStatus is Imported.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
-	TMap<TSubclassOf< class UFGItemDescriptor >, float> GetConsumedItems() const;
-
-
-	static EFactoryBoundaryType ClassifyTerminal(AFGBuildable* Buildable);
-
-	/** True if Buildable is a boundary, defined at EFactoryTerminalKind. */
-	static bool IsBoundaryBuildable(AFGBuildable* Buildable);
+	/** Pipe network groups, copied from the subsystem at scan completion. */
+	TMap<int32, TArray<AFGBuildableFactory*>> PipeNetworkGroups;
 
 private:
-	/** Stores this factory's connections between machines. Populated by RebuildEndpointIndex(). */
-	TMap<AFGBuildableFactory*, TArray<int32>> EndpointIndex;
-
 	/** Maps item type to connection type. Helper function. */
 	EFactoryConnectionKind MapItemType(EResourceForm ResourceForm) const;
 
+	/** Only storage with two connections should ever fall here. Used as fallback and will be checked */
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> UnclassifiedMembers;
+
+	/** The five types of building */
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> Manufacturers;
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> Producers;
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> Consumers;
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> ProducerConsumers;
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AFGBuildableFactory>> Bounds;
 };

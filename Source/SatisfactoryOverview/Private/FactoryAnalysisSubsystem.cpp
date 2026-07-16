@@ -231,22 +231,20 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 		}
 	}
 
-	// Initialize clusters (Aren't classified yet)
+	// Initialize clusters
 	TArray<UFactoryCluster*> Clusters;
 	for (auto& RawClusterPair : FactoryUnionFind.GetClusters())
 	{
 		UFactoryCluster* Cluster = NewObject<UFactoryCluster>(this);
-		bool bHasBuildables = false;
 		for (AFGBuildable* Member : RawClusterPair.Value)
 		{
 			if (AFGBuildableFactory* MemberFactory = Cast<AFGBuildableFactory>(Member)) {
-				bHasBuildables = true;
-				Cluster->Members.Add(MemberFactory);
+				Cluster->AddToFactory(MemberFactory);
 			}
 		}
 
-		// have no buildables? die lmao
-		if (bHasBuildables) {
+		if (!Cluster->GetMembers().IsEmpty()) {
+			Cluster->PipeNetworkGroups = PipeNetworkGroups;
 			Clusters.Add(Cluster);
 		}
 	}
@@ -256,26 +254,14 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 
 	for (auto& Cluster : Clusters)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]   Cluster (root=%s): %d buildables, %d boundary refs, IsNature=%d"),
-			*Cluster->GetName(), Cluster->Members.Num(), Cluster->BoundaryRefs.Num(), Cluster->IsNature());
+		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]   Cluster (root=%s): %d buildables, IsNature=%d"),
+			*Cluster->GetName(), Cluster->GetMembers().Num(), Cluster->IsNature());
 
-		for (const TWeakObjectPtr<AFGBuildableFactory>& WeakMember : Cluster->Members) {
-			AFGBuildableFactory* Member = WeakMember.Get();
-			if (!Member) continue;
-			if (AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Member)) {
-				TSubclassOf<UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
-				UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     %s -> Recipe: %s"),
-					*Manufacturer->GetName(), Recipe ? *Recipe->GetName() : TEXT("none"));
-			}
-			else {
-				UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     %s (not a manufacturer)"),
-					*Member->GetName());
-			}
-		}
+		FItemBalance Balance = Cluster->ComputeItemBalanceSheet(false);
 
 		// Print items produced.
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Items produced:"));
-		TMap<TSubclassOf< class UFGItemDescriptor >, float> ProducedItems = Cluster->GetProducedItems();
+		TMap<TSubclassOf< class UFGItemDescriptor >, float> ProducedItems = Balance.Export;
 		for (TPair<TSubclassOf< class UFGItemDescriptor >, float> Item : ProducedItems)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s - %.2f/min"), *Item.Key->GetName(), Item.Value);
@@ -283,7 +269,7 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 
 		// Print items consumed.
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Items consumed:"));
-		TMap<TSubclassOf< class UFGItemDescriptor >, float> ConsumedItems = Cluster->GetConsumedItems();
+		TMap<TSubclassOf< class UFGItemDescriptor >, float> ConsumedItems = Balance.Import;
 		for (TPair<TSubclassOf< class UFGItemDescriptor >, float> Item : ConsumedItems)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s - %.2f/min"), *Item.Key->GetName(), Item.Value);
