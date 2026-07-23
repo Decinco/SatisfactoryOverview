@@ -182,6 +182,12 @@ void UFactoryAnalysisSubsystem::ProcessContainer(AFGBuildableStorage* const& Bui
 	TArray<UFGFactoryConnectionComponent*> ContainerConnectors;
 	ContainerConnectors = Buildable->GetConnectionComponents();
 
+	if (ContainerConnectors.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Skipping buildable %s (index %d) because it has no connectors."), *Buildable->GetName(), Index);
+		return;
+	}
+
 	bool bIsOutputConnected = false;
 	bool bIsInputConnected = false;
 
@@ -202,7 +208,7 @@ void UFactoryAnalysisSubsystem::ProcessContainer(AFGBuildableStorage* const& Bui
 
 	// Do actual things now
 	if (bTreatContainersAsFactoryEnd && bIsConnectedOnBothSides) {
-		// Sike, I don't know how to do this yet
+		// Sike, I won't do this yet (TODO)
 	}
 	else {
 
@@ -251,13 +257,25 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 
 	// Log results
 	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Scan complete: %d clusters found."), Clusters.Num());
+	TArray<UFactoryCluster*> FilteredClusters = UFactoryCluster::GetAllValidClusters(Clusters);
+	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] %d valid clusters found."), FilteredClusters.Num());
 
-	for (auto& Cluster : Clusters)
+	for (auto& Cluster : FilteredClusters)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]   Cluster (root=%s): %d buildables, IsNature=%d"),
 			*Cluster->GetName(), Cluster->GetMembers().Num(), Cluster->IsNature());
 
 		FItemBalance Balance = Cluster->ComputeItemBalanceSheet(false);
+		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Members:"));
+
+		// Print buildings.
+		for (TWeakObjectPtr<AFGBuildableFactory> WeakFactory : Cluster->GetMembers()) 
+		{
+			AFGBuildableFactory* Factory = WeakFactory.Get();
+			if (!Factory) continue;
+
+			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s (%s)"), *Factory->GetName(), *Factory->GetClass()->GetName());
+		}
 
 		// Print items produced.
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Items produced:"));
@@ -274,6 +292,23 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s - %.2f/min"), *Item.Key->GetName(), Item.Value);
 		}
+
+		// Print items produced by miners
+		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Items supplied by miners:"));
+		TMap<TSubclassOf< class UFGItemDescriptor >, float> SuppliedItems = Balance.Produced;
+		for (TPair<TSubclassOf< class UFGItemDescriptor >, float> Item : SuppliedItems)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s - %.2f/min"), *Item.Key->GetName(), Item.Value);
+		}
+
+		// Print items consumed by consumers
+		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Items used by generators, portals or apas:"));
+		TMap<TSubclassOf< class UFGItemDescriptor >, float> UsedItems = Balance.Consumed;
+		for (TPair<TSubclassOf< class UFGItemDescriptor >, float> Item : UsedItems)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]       -> %s - %.2f/min"), *Item.Key->GetName(), Item.Value);
+		}
+
 	}
 
 	OnFactoryScanFinished.Broadcast();

@@ -83,6 +83,7 @@ struct FItemBalance
 {
 	GENERATED_BODY()
 
+	// Manufacturers
 	UPROPERTY()
 	TMap<TSubclassOf<class UFGItemDescriptor>, float> Export;
 
@@ -94,6 +95,14 @@ struct FItemBalance
 
 	UPROPERTY()
 	TMap<TSubclassOf<class UFGItemDescriptor>, float> Deficit;
+
+	// Produced by producers
+	UPROPERTY()
+	TMap<TSubclassOf<class UFGItemDescriptor>, float> Produced;
+
+	// Consumed by consumers
+	UPROPERTY()
+	TMap<TSubclassOf<class UFGItemDescriptor>, float> Consumed;
 };
  
 /**

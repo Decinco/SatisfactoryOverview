@@ -19,6 +19,11 @@
 
 // ProducerConsumer Types
 #include "Buildables/FGBuildableGeneratorNuclear.h"
+#include "Buildables/FGBuildableGeneratorFuel.h"
+
+// Nuclear fuel descriptor (waste class lookup)
+#include "Resources/FGItemDescriptorNuclearFuel.h"
+#include "Resources/FGItemDescriptor.h"
 
 // Bound Types
 #include "Buildables/FGBuildableDockingStation.h"		// Road
@@ -93,54 +98,222 @@ TArray<AFGBuildableFactory*> UFactoryCluster::GetValidMembers() const
 bool UFactoryCluster::IsNature() const
 {
 	// There can only be bounds and producers and BOTH must be present in some way.
-	return Manufacturers.IsEmpty() && Consumers.IsEmpty() && ProducerConsumers.IsEmpty() && !Bounds.IsEmpty() && !Producers.IsEmpty();
+	// UnclassifiedMembers (e.g. containers) must also be absent.
+	return Manufacturers.IsEmpty() && Consumers.IsEmpty() && ProducerConsumers.IsEmpty()
+		&& UnclassifiedMembers.IsEmpty()
+		&& !Bounds.IsEmpty() && !Producers.IsEmpty();
 }
+
+TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> UFactoryCluster::FindProductionConsumption(AFGBuildableFactory* Factory) const 
+{
+	TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> ProductionConsumption;
+
+	auto ConvertRecipeAmount = [](TSubclassOf<UFGItemDescriptor> Item, float Amount) -> float
+	{
+		const EResourceForm Form = UFGItemDescriptor::GetForm(Item);
+		return (Form == EResourceForm::RF_LIQUID || Form == EResourceForm::RF_GAS) ? Amount / 1000.f : Amount;
+	};
+
+	auto AddProduced = [&ProductionConsumption](TSubclassOf<UFGItemDescriptor> Item, float Rate)
+	{
+		if (Item && Rate > 0.f)
+			ProductionConsumption.FindOrAdd(Item).ProducedRate += Rate;
+	};
+
+	auto AddConsumed = [&ProductionConsumption](TSubclassOf<UFGItemDescriptor> Item, float Rate)
+	{
+		if (Item && Rate > 0.f)
+			ProductionConsumption.FindOrAdd(Item).ConsumedRate += Rate;
+	};
+
+	// Find out via recipe
+	if (AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(Factory))
+	{
+		const float CycleTime = Manufacturer->GetProductionCycleTime();
+		if (CycleTime <= 0.f) return ProductionConsumption;
+
+		const float CyclesPerMinute = 60.f / CycleTime;
+		const float ProducedMultiplier = CyclesPerMinute * Manufacturer->GetCurrentProductionBoost();
+		const float ConsumedMultiplier = CyclesPerMinute;
+
+		TSubclassOf<UFGRecipe> Recipe = Manufacturer->GetCurrentRecipe();
+		for (const FItemAmount& Product : UFGRecipe::GetProducts(Recipe)) 
+		{
+			AddProduced(Product.ItemClass, ConvertRecipeAmount(Product.ItemClass, Product.Amount) * ProducedMultiplier);
+		}
+		for (const FItemAmount& Ingredient : UFGRecipe::GetIngredients(this, Recipe)) 
+		{
+			AddConsumed(Ingredient.ItemClass, ConvertRecipeAmount(Ingredient.ItemClass, Ingredient.Amount) * ConsumedMultiplier);
+		}
+
+		return ProductionConsumption;
+	}
+
+	// Find out via current node
+	if (AFGBuildableResourceExtractor* Producer = Cast<AFGBuildableResourceExtractor>(Factory))
+	{
+		const TScriptInterface<IFGExtractableResourceInterface>& Extractable = Producer->GetExtractableResource();
+		if (Extractable)
+		{
+			const TSubclassOf<UFGItemDescriptor> ResourceClass(Extractable->GetResourceClass());
+			const float Rate = Producer->GetExtractionPerMinute();
+
+			AddProduced(ResourceClass, Rate); // Miners also, for some reason, divide by 1000
+		}
+		return ProductionConsumption;
+	}
+
+	// Find out via current fuel source
+	if (AFGBuildableGeneratorNuclear* NEPlant = Cast<AFGBuildableGeneratorNuclear>(Factory))
+	{
+		const TSubclassOf<UFGItemDescriptor> FuelClass = NEPlant->GetCurrentFuelClass();
+		if (FuelClass)
+		{
+			const float PowerCapacity = NEPlant->GetPowerProductionCapacity();
+			const float EnergyValue = UFGItemDescriptor::GetEnergyValue(FuelClass);
+			if (EnergyValue > 0.f)
+			{
+				const float FuelRate = 60.f * PowerCapacity / EnergyValue;
+				const float FixedRate = ConvertRecipeAmount(FuelClass, FuelRate);
+				AddConsumed(FuelClass, FixedRate);
+
+				if (FuelClass->IsChildOf(UFGItemDescriptorNuclearFuel::StaticClass()))
+				{
+					const TSubclassOf<UFGItemDescriptorNuclearFuel> NuclearFuelClass = Cast<UClass>(FuelClass);
+					const TSubclassOf<UFGItemDescriptor> WasteClass = UFGItemDescriptorNuclearFuel::GetSpentFuelClass(NuclearFuelClass);
+					const int32 WastePerCycle = UFGItemDescriptorNuclearFuel::GetAmountWasteCreated(NuclearFuelClass);
+					if (WasteClass && WastePerCycle > 0)
+					{
+						const float WasteFixedRate = ConvertRecipeAmount(WasteClass, FuelRate * WastePerCycle);
+						AddProduced(WasteClass, WasteFixedRate);
+					}
+				}
+			}
+		}
+
+		if (NEPlant->GetRequiresSupplementalResource())
+		{
+			const TSubclassOf<UFGItemDescriptor> SupplementalClass = NEPlant->GetSupplementalResourceClass();
+			const float SupplementalRate = NEPlant->GetSupplementalConsumptionRateMaximum() * 60.f;
+			AddConsumed(SupplementalClass, SupplementalRate); // For some reason, supplemental is already correctly divided
+		}
+
+		return ProductionConsumption;
+	}
+
+	// Find out via current fuel source
+	if (AFGBuildableGeneratorFuel* Generator = Cast<AFGBuildableGeneratorFuel>(Factory))
+	{
+		const TSubclassOf<UFGItemDescriptor> FuelClass = Generator->GetCurrentFuelClass();
+		if (FuelClass)
+		{
+			const float PowerCapacity = Generator->GetPowerProductionCapacity();
+			const float EnergyValue = UFGItemDescriptor::GetEnergyValue(FuelClass);
+			const float FuelRate = 60.f * PowerCapacity / EnergyValue;
+			const float FixedRate = ConvertRecipeAmount(FuelClass, FuelRate);
+			if (EnergyValue > 0.f)
+				AddConsumed(FuelClass, FixedRate);
+		}
+
+		if (Generator->GetRequiresSupplementalResource())
+		{
+			const TSubclassOf<UFGItemDescriptor> SupplementalClass = Generator->GetSupplementalResourceClass();
+			const float SupplementalRate = Generator->GetSupplementalConsumptionRateMaximum() * 60.f;
+			AddConsumed(SupplementalClass, SupplementalRate); // For some reason, supplemental is already correctly divided
+		}
+
+		return ProductionConsumption;
+	}
+
+	// Find out via custom accessors
+	if (AFGBuildablePowerBooster* APA = Cast<AFGBuildablePowerBooster>(Factory))
+	{
+		const TSubclassOf<UFGItemDescriptor> FuelClass = APA->GetmCurrentFuelClass();
+		const float FuelDuration = APA->GetmCurrentFuelDuration();
+		if (FuelClass && FuelDuration > 0.f)
+			AddConsumed(FuelClass, 60.f / FuelDuration);
+		return ProductionConsumption;
+	}
+
+	// Find out via custom accessors
+	if (AFGBuildablePortal* Portal = Cast<AFGBuildablePortal>(Factory))
+	{
+		const TSubclassOf<UFGItemDescriptor> FuelClass = Portal->GetmFuelItemClass();
+		const float CycleTime = Portal->GetDefaultProductionCycleTime();
+		if (FuelClass && CycleTime > 0.f)
+			AddConsumed(FuelClass, 60.f / CycleTime);
+		return ProductionConsumption;
+	}
+
+	return ProductionConsumption;
+};
 
 FItemBalance UFactoryCluster::ComputeItemBalanceSheet(bool bInFlagOverflowAsInefficient) const
 {
+	bool bFindOutBoundConnections = false; // i'm tired and I want to have an actual first draft ngl
+
 	FItemBalance Result;
 
 	// Find out items in Manufacturers' recipes
-	TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> Sheet;
+	TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> InternalFactory;
+	TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> Consumption;
+	TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> Production;
 
 	for (const TWeakObjectPtr<AFGBuildableFactory>& WeakManufacturer : Manufacturers)
 	{
-		// Get manufacturer. Should always be a manufacturer (duh).
-		AFGBuildableManufacturer* Manufacturer = Cast<AFGBuildableManufacturer>(WeakManufacturer.Get());
+		// Get manufacturer
+		AFGBuildableFactory* Manufacturer = WeakManufacturer.Get();
 		if (!Manufacturer) continue;
 
-		const float CycleTime = Manufacturer->GetProductionCycleTime();
-		const float ProductionBoost = Manufacturer->GetCurrentProductionBoost();
+		TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> ManufacturerSheet = FindProductionConsumption(Manufacturer);
 
-		if (CycleTime <= 0.f)
-		{
-			continue;
-		}
-
-		const float CyclesPerMinute = 60.f / CycleTime;
-		const float ProducedRateMultiplier = CyclesPerMinute * ProductionBoost;
-		const float ConsumedRateMultiplier = CyclesPerMinute;
-
-		auto Recipe = Manufacturer->GetCurrentRecipe();
-
-		for (const FItemAmount& Product : UFGRecipe::GetProducts(Recipe))
-		{
-			Sheet.FindOrAdd(Product.ItemClass).ProducedRate += Product.Amount * ProducedRateMultiplier;
-		}
-
-		for (const FItemAmount& Ingredient : UFGRecipe::GetIngredients(this, Recipe))
-		{
-			Sheet.FindOrAdd(Ingredient.ItemClass).ConsumedRate += Ingredient.Amount * ConsumedRateMultiplier;
+		for (TPair<TSubclassOf<UFGItemDescriptor>, FItemRate> ManufacturerSheetPair : ManufacturerSheet) {
+			InternalFactory.FindOrAdd(ManufacturerSheetPair.Key).ProducedRate += ManufacturerSheetPair.Value.ProducedRate;
+			InternalFactory.FindOrAdd(ManufacturerSheetPair.Key).ConsumedRate += ManufacturerSheetPair.Value.ConsumedRate;
 		}
 	}
 
-	// Find out additional production and consumption - TODO
+	// Get ProducerConsumers' production
+	for (const TWeakObjectPtr<AFGBuildableFactory>& WeakProducerConsumer : ProducerConsumers)
+	{
+		// Get producer consumer
+		AFGBuildableFactory* ProducerConsumer = WeakProducerConsumer.Get();
+		if (!ProducerConsumer) continue;
 
-	// Producers
-	for (const TWeakObjectPtr<AFGBuildableFactory>& WeakProducer : Producers) {
-		AFGBuildableResourceExtractor* Producer = Cast<AFGBuildableResourceExtractor>(WeakProducer.Get());
+		TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> ProducerConsumerSheet = FindProductionConsumption(ProducerConsumer);
 
-		// Get producer's production
+		for (TPair<TSubclassOf<UFGItemDescriptor>, FItemRate> ProducerConsumerSheetPair : ProducerConsumerSheet) {
+			InternalFactory.FindOrAdd(ProducerConsumerSheetPair.Key).ProducedRate += ProducerConsumerSheetPair.Value.ProducedRate;
+			Consumption.FindOrAdd(ProducerConsumerSheetPair.Key).ConsumedRate += ProducerConsumerSheetPair.Value.ConsumedRate;
+		}
+	}
+
+	// Get Consumers' consumption
+	for (const TWeakObjectPtr<AFGBuildableFactory>& WeakConsumer : Consumers)
+	{
+		// Get consumer
+		AFGBuildableFactory* Consumer = WeakConsumer.Get();
+		if (!Consumer) continue;
+
+		TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> ConsumerSheet = FindProductionConsumption(Consumer);
+
+		for (TPair<TSubclassOf<UFGItemDescriptor>, FItemRate> ConsumerSheetPair : ConsumerSheet) {
+			Consumption.FindOrAdd(ConsumerSheetPair.Key).ConsumedRate += ConsumerSheetPair.Value.ConsumedRate;
+		}
+	}
+
+	// Get Producers' production
+	for (const TWeakObjectPtr<AFGBuildableFactory>& WeakProducer : Producers)
+	{
+		// Get consumer
+		AFGBuildableFactory* Producer = WeakProducer.Get();
+		if (!Producer) continue;
+
+		TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> ProducerSheet = FindProductionConsumption(Producer);
+
+		for (TPair<TSubclassOf<UFGItemDescriptor>, FItemRate> ProducerSheetPair : ProducerSheet) {
+			Production.FindOrAdd(ProducerSheetPair.Key).ProducedRate += ProducerSheetPair.Value.ProducedRate;
+		}
 	}
 
 	// Find out output kind
@@ -186,14 +359,14 @@ FItemBalance UFactoryCluster::ComputeItemBalanceSheet(bool bInFlagOverflowAsInef
 	}
 
 	// Classify outputs
-	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemRate>& Pair : Sheet)
+	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemRate>& Pair : InternalFactory)
 	{
 		const TSubclassOf<UFGItemDescriptor>& Item = Pair.Key;
 		const float NetRate = Pair.Value.ProducedRate - Pair.Value.ConsumedRate;
 
 		if (NetRate > KINDA_SMALL_NUMBER)
 		{
-			if (ExportableViaBoundary.Contains(Item) || Pair.Value.bIsBounded) // Producers and consumers will count as bounds for this
+			if (!bFindOutBoundConnections || ExportableViaBoundary.Contains(Item))
 			{
 				Result.Export.Add(Item, NetRate);
 			}
@@ -204,7 +377,7 @@ FItemBalance UFactoryCluster::ComputeItemBalanceSheet(bool bInFlagOverflowAsInef
 		}
 		else if (NetRate < -KINDA_SMALL_NUMBER)
 		{
-			if (ImportableViaBoundary.Contains(Item) || Pair.Value.bIsBounded) // Producers and consumers will count as bounds for this
+			if (!bFindOutBoundConnections || ImportableViaBoundary.Contains(Item))
 			{
 				Result.Import.Add(Item, -NetRate);
 			}
@@ -213,6 +386,20 @@ FItemBalance UFactoryCluster::ComputeItemBalanceSheet(bool bInFlagOverflowAsInef
 				Result.Deficit.Add(Item, -NetRate);
 			}
 		}
+	}
+
+	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemRate>& Pair : Consumption) {
+		const TSubclassOf<UFGItemDescriptor>& Item = Pair.Key;
+		const float Rate = Pair.Value.ConsumedRate;
+
+		Result.Consumed.Add(Item, Rate);
+	}
+
+	for (const TPair<TSubclassOf<UFGItemDescriptor>, FItemRate>& Pair : Production) {
+		const TSubclassOf<UFGItemDescriptor>& Item = Pair.Key;
+		const float Rate = Pair.Value.ProducedRate;
+
+		Result.Produced.Add(Item, Rate);
 	}
 
 	return Result;
@@ -262,6 +449,47 @@ EFactoryConnectionKind UFactoryCluster::MapItemType(EResourceForm ResourceForm) 
 	}
 }
 
+TArray<UFactoryCluster*> UFactoryCluster::GetAllValidClusters(const TArray<UFactoryCluster*>& ClusterList) 
+{
+	TArray<UFactoryCluster*> FilteredClusterList;
+
+	for (UFactoryCluster* Cluster : ClusterList)
+	{
+		if (!Cluster) continue;
+
+		// Space elevator bypasses filtering
+		if (Cluster->bHasSpaceElevator) {
+			FilteredClusterList.Add(Cluster);
+			continue;
+		}
+
+		// Invalid. It cannot ever produce anything.
+		if (Cluster->GetValidMembers().Num() <= 1) {
+			continue;
+		}
+		// Producers, consumers, producerconsumers and bounds leading nowhere. They don't, can't do anything
+		else if (Cluster->Manufacturers.Num() <= 0 && Cluster->GetNumListsNotEmpty() <= 1) {
+			continue;
+		}
+
+		FilteredClusterList.Add(Cluster);
+	}
+
+	return FilteredClusterList;
+}
+
+int UFactoryCluster::GetNumListsNotEmpty() const {
+	int listsNotEmpty = 0;
+
+	if (Manufacturers.Num() > 0) listsNotEmpty++;
+	if (Producers.Num() > 0) listsNotEmpty++;
+	if (Consumers.Num() > 0) listsNotEmpty++;
+	if (ProducerConsumers.Num() > 0) listsNotEmpty++;
+	if (Bounds.Num() > 0) listsNotEmpty++;
+
+	return listsNotEmpty;
+}
+
 void UFactoryCluster::AddToFactory(AFGBuildableFactory* Buildable) {
 	if (!Buildable) return;
 
@@ -271,7 +499,6 @@ void UFactoryCluster::AddToFactory(AFGBuildableFactory* Buildable) {
 	else if (Cast<AFGBuildableResourceExtractor>(Buildable)) {
 		Producers.Add(Buildable);
 	}
-	// Nuclear before generic generator — it's a subclass of generator
 	else if (Cast<AFGBuildableGeneratorNuclear>(Buildable)) {
 		ProducerConsumers.Add(Buildable);
 	}
@@ -287,11 +514,14 @@ void UFactoryCluster::AddToFactory(AFGBuildableFactory* Buildable) {
 	else if (Cast<AFGBuildableDockingStation>(Buildable)
 		|| Cast<AFGBuildableTrainPlatformCargo>(Buildable)
 		|| Cast<AFGBuildableDroneStation>(Buildable)
-		|| Cast<AFGBuildableSpaceElevator>(Buildable)
 		|| Cast<AFGCentralStorageContainer>(Buildable)
 		|| Cast<AFGBuildablePipeReservoir>(Buildable)
 		|| Cast<AFGBuildableResourceSink>(Buildable)) {
 		Bounds.Add(Buildable);
+	}
+	else if (Cast<AFGBuildableSpaceElevator>(Buildable)) {
+		Bounds.Add(Buildable);
+		bHasSpaceElevator = true;
 	}
 	else if (Cast<AFGBuildableStorage>(Buildable)) {
 		// Get all connectors

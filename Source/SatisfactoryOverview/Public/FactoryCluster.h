@@ -89,12 +89,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
 	FItemBalance ComputeItemBalanceSheet(bool bInFlagOverflowAsInefficient) const;
 
+	/** Returns the produced amount by a certain buildable. Returns consumption as a negative number. */
+	TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> FindProductionConsumption(AFGBuildableFactory* Factory) const;
+
 	/** Pipe network groups, copied from the subsystem at scan completion. */
 	TMap<int32, TArray<AFGBuildableFactory*>> PipeNetworkGroups;
+
+	/** Find all valid clusters in a cluster list */
+	static TArray<UFactoryCluster*> GetAllValidClusters(const TArray<UFactoryCluster*>& ClusterList);
+
+	bool bHasSpaceElevator = false;
 
 private:
 	/** Maps item type to connection type. Helper function. */
 	EFactoryConnectionKind MapItemType(EResourceForm ResourceForm) const;
+
+	/** Gets the amount of lists that have at least 1 member */
+	int GetNumListsNotEmpty() const;
 
 	/** Only storage with two connections should ever fall here. Used as fallback and will be checked */
 	UPROPERTY()
