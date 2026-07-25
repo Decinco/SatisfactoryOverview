@@ -104,6 +104,27 @@ bool UFactoryCluster::IsNature() const
 		&& !Bounds.IsEmpty() && !Producers.IsEmpty();
 }
 
+bool UFactoryCluster::IsFuelStation() const
+{
+	bool bIsFuelStation = true;
+
+	// Check conditions are valid. Will not check an absurdly big amount.
+	if (Bounds.Num() > 0 && GetNumListsNotEmpty() == 1 && GetValidMembers().Num() <= 25) {
+		for (TWeakObjectPtr<AFGBuildableFactory> WeakBound : Bounds) {
+			AFGBuildableFactory* Factory = WeakBound.Get();
+
+			if (!Cast<AFGBuildableDockingStation>(Factory) && !Cast<AFGBuildableDroneStation>(Factory)) {
+				bIsFuelStation = false;
+			}
+		}
+	}
+	else {
+		bIsFuelStation = false;
+	}
+
+	return bIsFuelStation;
+}
+
 TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> UFactoryCluster::FindProductionConsumption(AFGBuildableFactory* Factory) const 
 {
 	TMap<TSubclassOf<UFGItemDescriptor>, FItemRate> ProductionConsumption;
@@ -462,12 +483,17 @@ TArray<UFactoryCluster*> UFactoryCluster::GetAllValidClusters(const TArray<UFact
 			FilteredClusterList.Add(Cluster);
 			continue;
 		}
+		// Fuel stations also bypass filtering
+		else if (Cluster->IsFuelStation()) {
+			FilteredClusterList.Add(Cluster);
+			continue;
+		}
 
 		// Invalid. It cannot ever produce anything.
 		if (Cluster->GetValidMembers().Num() <= 1) {
 			continue;
 		}
-		// Producers, consumers, producerconsumers and bounds leading nowhere. They don't, can't do anything
+		// Producers, consumers, producerconsumers and bounds leading nowhere. They don't, can't do anything.
 		else if (Cluster->Manufacturers.Num() <= 0 && Cluster->GetNumListsNotEmpty() <= 1) {
 			continue;
 		}

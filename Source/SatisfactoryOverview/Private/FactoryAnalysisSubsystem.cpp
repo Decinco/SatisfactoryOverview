@@ -23,10 +23,30 @@
 // Connection resolver
 #include "FactoryConnectionResolver.h"
 
+void UFactoryAnalysisSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+	StartScan();
+}
+
 UFactoryAnalysisSubsystem* UFactoryAnalysisSubsystem::GetFactoryAnalysisSubsystem(const UObject* WorldContextObject)
 {
 	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
 	return World ? World->GetSubsystem<UFactoryAnalysisSubsystem>() : nullptr;
+}
+
+UFactoryCluster* UFactoryAnalysisSubsystem::FindClusterFor(AFGBuildable* Buildable) const
+{
+	if (!Buildable)
+	{
+		return nullptr;
+	}
+
+	if (const TWeakObjectPtr<UFactoryCluster>* Found = BuildableToCluster.Find(Buildable))
+	{
+		return Found->Get();
+	}
+
+	return nullptr;
 }
 
 void UFactoryAnalysisSubsystem::StartScan()
@@ -54,7 +74,7 @@ void UFactoryAnalysisSubsystem::StartScan()
 	);
 }
 
-void UFactoryAnalysisSubsystem::ProcessConveyor(AFGBuildableConveyorBase* const& Buildable, int32 Index) 
+void UFactoryAnalysisSubsystem::ProcessConveyor(AFGBuildableConveyorBase* const& Buildable, int32 Index)
 {
 	FactoryUnionFind.MakeSet(Buildable);
 
@@ -76,7 +96,7 @@ void UFactoryAnalysisSubsystem::ProcessConveyor(AFGBuildableConveyorBase* const&
 	}
 }
 
-void UFactoryAnalysisSubsystem::BeginFactoryProcessing() 
+void UFactoryAnalysisSubsystem::BeginFactoryProcessing()
 {
 	PipeNetworkGroups.Empty();
 
@@ -106,7 +126,6 @@ void UFactoryAnalysisSubsystem::ProcessFactory(AFGBuildableFactory* const& Build
 	// Containers are skipped, their logic lives in the third pass.
 	if (Cast<AFGBuildableStorage>(Buildable) && !Cast<AFGCentralStorageContainer>(Buildable))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Skipping buildable %s (index %d) because it is a container."), *Buildable->GetName(), Index);
 		return;
 	}
 
@@ -123,9 +142,8 @@ void UFactoryAnalysisSubsystem::ProcessFactory(AFGBuildableFactory* const& Build
 	TArray<UFGPipeConnectionComponent*> PipeConnections;
 	Buildable->GetComponents<UFGPipeConnectionComponent>(PipeConnections);
 
-	if(FactoryConnectors.Num() == 0 && PipeConnections.Num() == 0)
+	if (FactoryConnectors.Num() == 0 && PipeConnections.Num() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Skipping buildable %s (index %d) because it has no connectors."), *Buildable->GetName(), Index);
 		return;
 	}
 
@@ -146,14 +164,12 @@ void UFactoryAnalysisSubsystem::ProcessFactory(AFGBuildableFactory* const& Build
 		int32 NetworkId = PipeConn->GetPipeNetworkID();
 		if (NetworkId != INDEX_NONE) // INDEX_NONE means not connected to any network
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Buildable %s is part of pipe network %d via pipe connection %s"),
-				*Buildable->GetName(), NetworkId, *PipeConn->GetName());
 			PipeNetworkGroups.FindOrAdd(NetworkId).Add(Buildable);
 		}
 	}
 }
 
-void UFactoryAnalysisSubsystem::BeginContainerProcessing() 
+void UFactoryAnalysisSubsystem::BeginContainerProcessing()
 {
 	TArray<AActor*> AllActors;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFGBuildableStorage::StaticClass(), AllActors);
@@ -184,44 +200,15 @@ void UFactoryAnalysisSubsystem::ProcessContainer(AFGBuildableStorage* const& Bui
 
 	if (ContainerConnectors.Num() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Skipping buildable %s (index %d) because it has no connectors."), *Buildable->GetName(), Index);
 		return;
 	}
 
-	bool bIsOutputConnected = false;
-	bool bIsInputConnected = false;
+	FactoryUnionFind.MakeSet(Buildable);
 
-	// Determine how many sides are connected.
 	for (UFGFactoryConnectionComponent* Connector : ContainerConnectors) {
-		if (Connector->IsConnected()) {
-			if (Connector->GetDirection() == EFactoryConnectionDirection::FCD_INPUT) {
-				bIsInputConnected = true;
-			}
-			else if (Connector->GetDirection() == EFactoryConnectionDirection::FCD_OUTPUT) {
-				bIsOutputConnected = true;
-			}
-		}
-	}
-
-	// Check if the container is connected both sides
-	bool bIsConnectedOnBothSides = bIsOutputConnected && bIsInputConnected;
-
-	// Do actual things now
-	if (bTreatContainersAsFactoryEnd && bIsConnectedOnBothSides) {
-		// Sike, I won't do this yet (TODO)
-	}
-	else {
-
-		FactoryUnionFind.MakeSet(Buildable);
-
-		// Assumes all belts have a set
-		for (UFGFactoryConnectionComponent* Connector : ContainerConnectors) {
-			if (!Connector->IsConnected()) continue;
-			AFGBuildable* Outer = Connector->GetConnection()->GetOuterBuildable();
-
-			// i forgor
-			FactoryUnionFind.Union(Buildable, Outer);
-		}
+		if (!Connector->IsConnected()) continue;
+		AFGBuildable* Outer = Connector->GetConnection()->GetOuterBuildable();
+		FactoryUnionFind.Union(Buildable, Outer);
 	}
 }
 
@@ -237,26 +224,35 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 		}
 	}
 
-	// Initialize clusters
-	TArray<UFactoryCluster*> Clusters;
+	Clusters.Empty();
+	BuildableToCluster.Empty();
+
 	for (auto& RawClusterPair : FactoryUnionFind.GetClusters())
 	{
 		UFactoryCluster* Cluster = NewObject<UFactoryCluster>(this);
 		for (AFGBuildable* Member : RawClusterPair.Value)
 		{
-			if (AFGBuildableFactory* MemberFactory = Cast<AFGBuildableFactory>(Member)) {
+			BuildableToCluster.Add(Member, Cluster);
+
+			if (AFGBuildableFactory* MemberFactory = Cast<AFGBuildableFactory>(Member))
+			{
 				Cluster->AddToFactory(MemberFactory);
 			}
 		}
 
-		if (!Cluster->GetMembers().IsEmpty()) {
-			Cluster->PipeNetworkGroups = PipeNetworkGroups;
-			Clusters.Add(Cluster);
-		}
+		Cluster->PipeNetworkGroups = PipeNetworkGroups;
+		Clusters.Add(Cluster);
 	}
+	DebugClusters();
+
+	OnFactoryScanFinished.Broadcast();
+}
+
+void UFactoryAnalysisSubsystem::DebugClusters() {
+	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] CLUSTER LOG"));
 
 	// Log results
-	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] Scan complete: %d clusters found."), Clusters.Num());
+	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] %d clusters found."), Clusters.Num());
 	TArray<UFactoryCluster*> FilteredClusters = UFactoryCluster::GetAllValidClusters(Clusters);
 	UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis] %d valid clusters found."), FilteredClusters.Num());
 
@@ -269,7 +265,7 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]     Members:"));
 
 		// Print buildings.
-		for (TWeakObjectPtr<AFGBuildableFactory> WeakFactory : Cluster->GetMembers()) 
+		for (TWeakObjectPtr<AFGBuildableFactory> WeakFactory : Cluster->GetMembers())
 		{
 			AFGBuildableFactory* Factory = WeakFactory.Get();
 			if (!Factory) continue;
@@ -310,10 +306,8 @@ void UFactoryAnalysisSubsystem::OnScanComplete()
 		}
 
 	}
-
-	OnFactoryScanFinished.Broadcast();
 }
-	
+
 void UFactoryAnalysisSubsystem::Tick(float DeltaTime)
 {
 	if (!ConveyorWorkQueue.IsComplete())

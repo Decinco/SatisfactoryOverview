@@ -83,6 +83,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis")
 	bool IsNature() const;
 
+	/** Fuel Station: only truck or drone stations */
+	bool IsFuelStation() const;
+
 	TArray<FConnectorResolution> GetConnectionsFrom(AFGBuildableFactory* Target, EConnectionDirection Direction) const;
 
 	/** Calculates factory's inputs and outputs by the amount produced and consumed within its machines */
