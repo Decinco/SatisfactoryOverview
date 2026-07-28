@@ -158,7 +158,7 @@ void UFactoryAnalysisSubsystem::ProcessFactory(AFGBuildableFactory* const& Build
 		AFGBuildable* Outer = Connection->GetConnection()->GetOuterBuildable();
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]   Belt union -> %s"), *Outer->GetName());
 
-		// Assumes that the connected belts are already in the set, lmao
+		FactoryUnionFind.MakeSet(Outer);
 		FactoryUnionFind.Union(Buildable, Outer);
 	}
 
@@ -228,6 +228,7 @@ void UFactoryAnalysisSubsystem::ProcessContainer(AFGBuildableStorage* const& Bui
 		if (!Connector->IsConnected()) continue;
 		AFGBuildable* Outer = Connector->GetConnection()->GetOuterBuildable();
 		UE_LOG(LogTemp, Warning, TEXT("[FactoryAnalysis]   Union -> %s"), *Outer->GetName());
+		FactoryUnionFind.MakeSet(Outer);
 		FactoryUnionFind.Union(Buildable, Outer);
 	}
 }
@@ -435,6 +436,8 @@ void UFactoryAnalysisSubsystem::HandleBuildableConstructed(AFGBuildable* NewBuil
 
 			for (AFGBuildable* Member : *Members)
 			{
+				if (!IsValid(Member))
+					continue;
 				if (AFGBuildableFactory* MemberFactory = Cast<AFGBuildableFactory>(Member))
 					Cluster->AddToFactory(MemberFactory);
 			}
@@ -457,6 +460,8 @@ void UFactoryAnalysisSubsystem::HandleBuildableConstructed(AFGBuildable* NewBuil
 
 		for (AFGBuildable* Member : *Members)
 		{
+			if (!IsValid(Member))
+				continue;
 			if (AFGBuildableFactory* MemberFactory = Cast<AFGBuildableFactory>(Member))
 				Cluster->AddToFactory(MemberFactory);
 		}
@@ -476,8 +481,23 @@ void UFactoryAnalysisSubsystem::HandleActorsConstructedByPlayer(AFGCharacterPlay
 	{
 		if (AFGBuildable* Buildable = Cast<AFGBuildable>(Actor))
 		{
-			HandleBuildableConstructed(Buildable);
+			PendingBuildables.Add(Buildable);
 		}
+	}
+}
+
+void UFactoryAnalysisSubsystem::FlushIncrementalQueue()
+{
+	if (PendingBuildables.Num() > 0)
+	{
+		TArray<AFGBuildable*> Items = MoveTemp(PendingBuildables);
+		PendingBuildables.Empty();
+
+		IncrementalWorkQueue.Start(
+			MoveTemp(Items),
+			[this](AFGBuildable* const& Buildable, int32 Index) { HandleBuildableConstructed(Buildable); },
+			[this]() { FlushIncrementalQueue(); }
+		);
 	}
 }
 
@@ -494,5 +514,15 @@ void UFactoryAnalysisSubsystem::Tick(float DeltaTime)
 	else if (!ContainerWorkQueue.IsComplete())
 	{
 		ContainerWorkQueue.ProcessBudget();
+	}
+
+	// Incremental work queue: executes after initial scan
+	else if (!IncrementalWorkQueue.IsComplete())
+	{
+		IncrementalWorkQueue.ProcessBudget();
+	}
+	else if (PendingBuildables.Num() > 0)
+	{
+		FlushIncrementalQueue();
 	}
 }

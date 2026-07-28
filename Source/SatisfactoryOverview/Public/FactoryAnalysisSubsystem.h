@@ -77,9 +77,17 @@ public:
 	// --- FTickableGameObject ---
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override { RETURN_QUICK_DECLARE_CYCLE_STAT(UFactoryAnalysisSubsystem, STATGROUP_Tickables); }
-	virtual bool IsTickable() const override { return IsScanInProgress(); }
+	virtual bool IsTickable() const override { return IsScanInProgress() || IsIncrementalInProgress(); }
 
 private:
+	/** True while the incremental queue has work pending or in-flight. */
+	bool IsIncrementalInProgress() const {
+		return !IncrementalWorkQueue.IsComplete() || PendingBuildables.Num() > 0;
+	}
+
+	/** Called when an incremental batch finishes; drains PendingBuildables into a new batch. */
+	void FlushIncrementalQueue();
+
 	/** Unions conveyors between themselves. */
 	void ProcessConveyor(AFGBuildableConveyorBase* const& Buildable, int32 Index);
 
@@ -103,6 +111,8 @@ private:
 	TBudgetedWorkQueue<AFGBuildableConveyorBase*> ConveyorWorkQueue;
 	TBudgetedWorkQueue<AFGBuildableFactory*> FactoryWorkQueue;
 	TBudgetedWorkQueue<AFGBuildableStorage*> ContainerWorkQueue;
+	TBudgetedWorkQueue<AFGBuildable*> IncrementalWorkQueue;
+	TArray<AFGBuildable*> PendingBuildables;
 	mutable FBuildableUnionFind FactoryUnionFind;
 
 	UPROPERTY()
