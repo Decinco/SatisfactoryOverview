@@ -12,6 +12,7 @@
 #include "FactoryAnalysisSubsystem.generated.h"
 
 class AFGBuildable;
+class AFGCharacterPlayer;
 // Scan finished delegate.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnFactoryScanFinished);
 
@@ -26,6 +27,7 @@ class UFactoryAnalysisSubsystem : public UWorldSubsystem, public FTickableGameOb
 	GENERATED_BODY()
 
 public:
+
 	UFUNCTION(BlueprintPure, Category = "FactoryAnalysis", meta = (WorldContext = "WorldContextObject"))
 	static UFactoryAnalysisSubsystem* GetFactoryAnalysisSubsystem(const UObject* WorldContextObject);
 
@@ -65,6 +67,13 @@ public:
 
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 
+	UFUNCTION(BlueprintCallable, Category = "FactoryAnalysis")
+	void HandleBuildableConstructed(AFGBuildable* NewBuildable);
+
+	/** Handles player-constructed actors (fires after connections are established). */
+	UFUNCTION()
+	void HandleActorsConstructedByPlayer(AFGCharacterPlayer* Player, TArray<AActor*> ConstructedActors);
+
 	// --- FTickableGameObject ---
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override { RETURN_QUICK_DECLARE_CYCLE_STAT(UFactoryAnalysisSubsystem, STATGROUP_Tickables); }
@@ -77,7 +86,7 @@ private:
 	/** Unions factory buildings to already existing networks. */
 	void ProcessFactory(AFGBuildableFactory* const& Buildable, int32 Index);
 
-	/** Unions containers into whatever they're connected to (v1 scope: unconditional pass-through -- see design doc �2 v1 scope note). */
+	/** Unions containers into whatever they're connected to. */
 	void ProcessContainer(AFGBuildableStorage* const& Buildable, int32 Index);
 
 	/** Prepares factory processing */
@@ -87,27 +96,23 @@ private:
 	void BeginContainerProcessing();
 
 	/** Runs once all work queues finish. Rebuilds Clusters/BuildableToCluster from FactoryUnionFind. */
-	void OnScanComplete();
+	void RegisterClusters();
 
-	/**
-	 * Work queues and Union-Find. 
-	 */
+	TMap<TWeakObjectPtr<AFGBuildable>, TWeakObjectPtr<UFactoryCluster>> BuildableToCluster;
+
 	TBudgetedWorkQueue<AFGBuildableConveyorBase*> ConveyorWorkQueue;
 	TBudgetedWorkQueue<AFGBuildableFactory*> FactoryWorkQueue;
 	TBudgetedWorkQueue<AFGBuildableStorage*> ContainerWorkQueue;
-	FBuildableUnionFind FactoryUnionFind;
+	mutable FBuildableUnionFind FactoryUnionFind;
 
-	/**
-	 * Factory Clusters found on this save.
-	 */
 	UPROPERTY()
 	TArray<UFactoryCluster*> Clusters;
-
-	TMap<TWeakObjectPtr<AFGBuildable>, TWeakObjectPtr<UFactoryCluster>> BuildableToCluster;
 
 	// Boundary connections to be added to the cluster after the scan completes.
 	TMap<TWeakObjectPtr<AFGBuildableFactory>, TArray<FItemBalance>> PendingBoundaryEndpoints;
 
 	// Populated during ProcessFactory/ProcessContainer, consumed in OnScanComplete's pipe-merge pass.
-	TMap<int32, TArray<AFGBuildableFactory*>> PipeNetworkGroups; // ADJUST: confirm real pipe network ID type (assumed int32 here)
+	TMap<int32, TArray<AFGBuildableFactory*>> PipeNetworkGroups;
+
+	UFactoryCluster* FindOrCreateClusterFor(AFGBuildable* Buildable);
 };

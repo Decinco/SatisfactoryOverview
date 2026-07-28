@@ -6,6 +6,9 @@
 class FBuildableUnionFind
 {
 public:
+	/** Non-asserting existence check — Find() asserts if never registered via MakeSet(). */
+	bool Contains(AFGBuildable* Buildable) const { return Parent.Contains(Buildable); }
+
 	/** Registers a buildable as its own singleton set, if not already known. */
 	void MakeSet(AFGBuildable* Buildable)
 	{

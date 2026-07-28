@@ -516,6 +516,33 @@ int UFactoryCluster::GetNumListsNotEmpty() const {
 	return listsNotEmpty;
 }
 
+void UFactoryCluster::EmptyLists() {
+	Manufacturers.Empty();
+	Producers.Empty();
+	Consumers.Empty();
+	ProducerConsumers.Empty();
+	Bounds.Empty();
+	UnclassifiedMembers.Empty();
+}
+
+void UFactoryCluster::AbsorbMembers(UFactoryCluster* Other)
+{
+	if (!Other || Other == this) return;
+
+	// Having 6 separate lists requires a sacrifice... Oh well.
+	Manufacturers.Append(Other->Manufacturers);
+	Producers.Append(Other->Producers);
+	Consumers.Append(Other->Consumers);
+	ProducerConsumers.Append(Other->ProducerConsumers);
+	Bounds.Append(Other->Bounds);
+	UnclassifiedMembers.Append(Other->UnclassifiedMembers);
+
+	bHasSpaceElevator |= Other->bHasSpaceElevator;
+
+	for (auto& Pair : Other->PipeNetworkGroups)
+		PipeNetworkGroups.FindOrAdd(Pair.Key).Append(Pair.Value);
+}
+
 void UFactoryCluster::AddToFactory(AFGBuildableFactory* Buildable) {
 	if (!Buildable) return;
 

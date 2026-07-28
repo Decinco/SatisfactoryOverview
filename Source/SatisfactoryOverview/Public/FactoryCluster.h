@@ -64,6 +64,9 @@ class UFactoryCluster : public UObject
 	GENERATED_BODY()
 
 public:
+	UPROPERTY()
+	TWeakObjectPtr<AFGBuildable> RootBuildable;
+
 	/** Config-set */
 	UPROPERTY()
 	bool bFlagOverflowAsInefficient = false;
@@ -102,6 +105,12 @@ public:
 	static TArray<UFactoryCluster*> GetAllValidClusters(const TArray<UFactoryCluster*>& ClusterList);
 
 	bool bHasSpaceElevator = false;
+
+	/** Cluster operations */
+	void AbsorbMembers(UFactoryCluster* Other);
+
+	/** Resets the cluster */
+	void EmptyLists();
 
 private:
 	/** Maps item type to connection type. Helper function. */
